@@ -1,0 +1,12 @@
+server:
+  oidc:
+    issuer: https://keycloak.example.com/realms/agentic
+    audience: openshell-cli
+    jwksTtl: 3600
+    rolesClaim: roles
+    adminRole: openshell-admin
+    userRole: openshell-admin
+  # Kubernetes compute does not support mTLS user authentication. OIDC is the
+  # user/API auth mechanism for this deployment.
+  tls:
+    clientCaSecretName: ""

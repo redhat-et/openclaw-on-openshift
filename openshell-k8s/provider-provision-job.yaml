@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: openshell-provider-provision
+  labels:
+    app.kubernetes.io/name: openshell-provider-provision
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openshell-provider-provision
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: openshell
+          image: quay.io/sallyom/openshell-cli:amd64-delegated
+          imagePullPolicy: Always
+          command: ["/usr/local/bin/openshell"]
+          args:
+            - provider
+            - create
+            - --gateway-endpoint
+            - "$(OPENSHELL_GATEWAY_ENDPOINT)"
+            - --name
+            - openai
+            - --type
+            - generic
+            - --credential
+            - "OPENAI_API_KEY=$(OPENAI_API_KEY)"
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openai-api
+                  key: OPENAI_API_KEY
+            - name: OPENSHELL_GATEWAY_ENDPOINT
+              value: https://sallyom-openshell.sallyom-openshell-remote.svc:8080
+            - name: OPENSHELL_TLS_CA
+              value: /etc/openshell/tls/client/ca.crt
+            - name: OPENSHELL_TLS_CERT
+              value: /etc/openshell/tls/client/tls.crt
+            - name: OPENSHELL_TLS_KEY
+              value: /etc/openshell/tls/client/tls.key
+            - name: OPENSHELL_SANDBOX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openshell-oidc-token
+                  key: token
+          volumeMounts:
+            - name: openshell-client-tls
+              mountPath: /etc/openshell/tls/client
+              readOnly: true
+      volumes:
+        - name: openshell-client-tls
+          secret:
+            secretName: openshell-client-tls

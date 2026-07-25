@@ -1,0 +1,29 @@
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /app
+    - /etc
+    - /var/log
+  read_write:
+    - /sandbox
+    - /tmp
+    - /dev/null
+landlock:
+  compatibility: best_effort
+process:
+  run_as_user: "1000"
+  run_as_group: "1000"
+
+network_policies:
+  openshell_gateway:
+    name: OpenShell gateway
+    endpoints:
+      - host: host.containers.internal
+        port: 17672
+    binaries:
+      - path: /usr/local/bin/openshell

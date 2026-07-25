@@ -1,0 +1,285 @@
+#!/bin/bash
+# Bootstrap the WIP OpenShell workspace + session-worker CSB. This deliberately
+# leaves scripts/openclaw-csb and its single-sandbox demo untouched.
+
+set -euo pipefail
+
+WORKSPACE="${OPENCLAW_CSB_WORKSPACE:-openclaw-csb}"
+SANDBOX_NAME="${OPENCLAW_CSB_GATEWAY_SANDBOX:-oc-csb-gateway}"
+VOLUME_NAME="${OPENCLAW_CSB_VOLUME:-openclaw-csb-workers-data}"
+GATEWAY_IMAGE="${OPENCLAW_CSB_GATEWAY_IMAGE:-quay.io/sallyom/openclaw-openshell-csb-gateway:workers-wip}"
+WORKER_IMAGE="${OPENCLAW_CSB_WORKER_IMAGE:-quay.io/sallyom/openclaw-openshell:latest}"
+CONTROL_UI_PORT="${OPENCLAW_CSB_CONTROL_UI_PORT:-18791}"
+PROVIDER="${OPENCLAW_CSB_PROVIDER:-openai}"
+MODEL="${OPENCLAW_CSB_MODEL:-gpt-5.5}"
+INFERENCE_API="${OPENCLAW_CSB_INFERENCE_API:-openai-responses}"
+OPENSHELL_COMMAND="${OPENCLAW_CSB_OPENSHELL_COMMAND:-openshell}"
+OPENSHELL_CA_FILE="${OPENCLAW_CSB_OPENSHELL_CA_FILE:-}"
+OPENSHELL_TOKEN_FILE="${OPENCLAW_CSB_OPENSHELL_TOKEN_FILE:-}"
+GATEWAY_INTERNAL_ENDPOINT="${OPENCLAW_CSB_GATEWAY_INTERNAL_ENDPOINT:-${OPENCLAW_CSB_GATEWAY_ENDPOINT:-https://host.containers.internal:17670}}"
+TOKEN_SERVICE="com.redhat-et.openclaw-csb-workers.gateway-token"
+TOKEN_ACCOUNT="${USER:-openclaw-csb}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+GATEWAY_POLICY="${REPO_ROOT}/csb/policy.gateway.yaml"
+SKILLS_DIR="${REPO_ROOT}/skills"
+gateway_token=""
+
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/openclaw-csb-workers <command> [options]
+
+Commands:
+  prepare     Create the OpenShell workspace/provider/inference.local route.
+  create      Create the outer OpenClaw Gateway sandbox.
+  quickstart  Prepare, create, upload skills, start Gateway, and forward its UI.
+  token-copy  Copy the stored Control UI token to the clipboard.
+  status      Show the workspace and its Gateway/worker sandboxes.
+
+Options:
+  --skills-dir <dir>  Skill directory for quickstart (default: ./skills).
+
+Required only when provider 'openai' does not already exist in the workspace:
+  OPENAI_API_KEY
+
+Image inputs:
+  OPENCLAW_CSB_GATEWAY_IMAGE  outer Gateway image
+  OPENCLAW_CSB_WORKER_IMAGE   worker source image used by the plugin
+  OPENCLAW_CSB_OPENSHELL_COMMAND  OpenShell CLI from the delegation branch
+  OPENCLAW_CSB_OPENSHELL_CA_FILE  CA file for a remote OpenShell gateway Route
+  OPENCLAW_CSB_OPENSHELL_TOKEN_FILE Keycloak bearer token file for the gateway
+EOF
+}
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+heading() { echo; echo "==> $*"; }
+success() { echo "✓ $*"; }
+
+require_command() { command -v "$1" >/dev/null 2>&1 || die "'$1' is required"; }
+
+require_secret_store() {
+    case "$(uname -s)" in
+        Darwin) require_command security ;;
+        Linux) require_command secret-tool ;;
+        *) die "macOS Keychain or Linux Secret Service is required" ;;
+    esac
+}
+
+require_clipboard() {
+    case "$(uname -s)" in
+        Darwin) require_command pbcopy ;;
+        Linux) command -v wl-copy >/dev/null 2>&1 || command -v xclip >/dev/null 2>&1 \
+            || die "'wl-copy' or 'xclip' is required" ;;
+        *) die "clipboard support is unavailable" ;;
+    esac
+}
+
+read_stored_token() {
+    case "$(uname -s)" in
+        Darwin) security find-generic-password -s "${TOKEN_SERVICE}" -a "${TOKEN_ACCOUNT}" -w 2>/dev/null ;;
+        Linux) secret-tool lookup service "${TOKEN_SERVICE}" account "${TOKEN_ACCOUNT}" 2>/dev/null ;;
+        *) return 1 ;;
+    esac
+}
+
+write_stored_token() {
+    case "$(uname -s)" in
+        Darwin) security add-generic-password -U -s "${TOKEN_SERVICE}" -a "${TOKEN_ACCOUNT}" -w "$1" >/dev/null ;;
+        Linux) printf '%s' "$1" | secret-tool store --label="OpenClaw CSB workers gateway token" service "${TOKEN_SERVICE}" account "${TOKEN_ACCOUNT}" >/dev/null ;;
+        *) die "macOS Keychain or Linux Secret Service is required" ;;
+    esac
+}
+
+
+copy_to_clipboard() {
+    case "$(uname -s)" in
+        Darwin) pbcopy ;;
+        Linux) command -v wl-copy >/dev/null 2>&1 && wl-copy || xclip -selection clipboard ;;
+        *) die "clipboard support is unavailable" ;;
+    esac
+}
+
+load_or_create_token() {
+    if gateway_token="$(read_stored_token)" && [[ -n "${gateway_token}" ]]; then
+        return
+    fi
+    gateway_token="$(openssl rand -hex 32)"
+    write_stored_token "${gateway_token}"
+    printf '%s' "${gateway_token}" | copy_to_clipboard
+    success "Created a Control UI token in the host keyring and copied it to the clipboard."
+}
+
+openshell_cli() { "${OPENSHELL_COMMAND}" "$@"; }
+openshell_ws() { openshell_cli --workspace "${WORKSPACE}" "$@"; }
+
+ensure_workspace() {
+    if openshell_cli workspace get "${WORKSPACE}" >/dev/null 2>&1; then
+        success "Reusing OpenShell workspace: ${WORKSPACE}"
+    else
+        heading "Creating OpenShell workspace: ${WORKSPACE}"
+        openshell_cli workspace create --name "${WORKSPACE}"
+    fi
+}
+
+ensure_provider() {
+    if openshell_ws provider get "${PROVIDER}" >/dev/null 2>&1; then
+        success "Reusing workspace provider: ${PROVIDER}"
+        return
+    fi
+    [[ "${PROVIDER}" == "openai" ]] || die "only the preserved OpenAI CSB provider is supported by this WIP helper"
+    [[ -n "${OPENAI_API_KEY:-}" ]] || die "OPENAI_API_KEY is required to create workspace provider '${PROVIDER}'"
+    heading "Creating workspace provider: ${PROVIDER}"
+    openshell_ws provider create --name "${PROVIDER}" --type openai --credential OPENAI_API_KEY
+    unset OPENAI_API_KEY
+}
+
+prepare() {
+    ensure_workspace
+    ensure_provider
+    heading "Setting workspace inference.local route"
+    openshell_ws inference set --provider "${PROVIDER}" --model "${MODEL}"
+    openshell_ws inference get
+}
+
+ensure_volume() {
+    if ! podman volume inspect "${VOLUME_NAME}" >/dev/null 2>&1; then
+        podman volume create "${VOLUME_NAME}" >/dev/null
+    fi
+    podman run --rm --user 0 --entrypoint sh -v "${VOLUME_NAME}:/data" "${GATEWAY_IMAGE}" -c 'chmod 0770 /data; chown 1000:1000 /data'
+}
+
+create() {
+    if openshell_ws sandbox get "${SANDBOX_NAME}" >/dev/null 2>&1; then
+        success "Reusing Gateway sandbox: ${SANDBOX_NAME}"
+        return
+    fi
+    [[ -f "${GATEWAY_POLICY}" ]] || die "Gateway policy is missing: ${GATEWAY_POLICY}"
+    ensure_volume
+    load_or_create_token
+    local mounts_json
+    mounts_json="[{\"type\":\"volume\",\"source\":\"${VOLUME_NAME}\",\"target\":\"/sandbox/persist\",\"read_only\":false}"
+    if [[ -n "${OPENSHELL_CA_FILE}" ]]; then
+        [[ -f "${OPENSHELL_CA_FILE}" ]] || die "OpenShell CA file not found: ${OPENSHELL_CA_FILE}"
+        mounts_json+=",{\"type\":\"bind\",\"source\":\"${OPENSHELL_CA_FILE}\",\"target\":\"/run/openshell/tls/ca.crt\",\"read_only\":true}"
+    fi
+    if [[ -n "${OPENSHELL_TOKEN_FILE}" ]]; then
+        [[ -f "${OPENSHELL_TOKEN_FILE}" ]] || die "OpenShell token file not found: ${OPENSHELL_TOKEN_FILE}"
+        mounts_json+=",{\"type\":\"bind\",\"source\":\"${OPENSHELL_TOKEN_FILE}\",\"target\":\"/run/openshell/auth/token\",\"read_only\":true}"
+    fi
+    mounts_json+="]"
+    heading "Creating OpenClaw Gateway sandbox: ${SANDBOX_NAME}"
+    openshell_ws sandbox create \
+        --name "${SANDBOX_NAME}" \
+        --from "${GATEWAY_IMAGE}" \
+        --cpu 2 \
+        --memory 4Gi \
+        --policy "${GATEWAY_POLICY}" \
+        --no-auto-providers \
+        --driver-config-json "{\"podman\":{\"mounts\":${mounts_json}}}" \
+        --env "OPENCLAW_GATEWAY_TOKEN=${gateway_token}" \
+        --env "OPENCLAW_OPENSHELL_WORKSPACE=${WORKSPACE}" \
+        --env "OPENCLAW_OPENSHELL_WORKER_IMAGE=${WORKER_IMAGE}" \
+        --env "OPENCLAW_OPENSHELL_GATEWAY_ENDPOINT=${GATEWAY_INTERNAL_ENDPOINT}" \
+        ${OPENSHELL_CA_FILE:+--env} ${OPENSHELL_CA_FILE:+OPENCLAW_OPENSHELL_CA_FILE=/run/openshell/tls/ca.crt} \
+        ${OPENSHELL_TOKEN_FILE:+--env} ${OPENSHELL_TOKEN_FILE:+OPENCLAW_OPENSHELL_TOKEN_FILE=/run/openshell/auth/token} \
+        --env "OPENCLAW_OPENSHELL_CONTROL_UI_PORT=${CONTROL_UI_PORT}" \
+        --env "OPENCLAW_OPENSHELL_INFERENCE_PROVIDER=${PROVIDER}" \
+        --env OPENCLAW_OPENSHELL_OPENCLAW_PROVIDER=openai \
+        --env "OPENCLAW_OPENSHELL_INFERENCE_MODEL=${MODEL}" \
+        --env "OPENCLAW_OPENSHELL_INFERENCE_API=${INFERENCE_API}" \
+        -- true
+}
+
+upload_skills() {
+    [[ -d "${SKILLS_DIR}" ]] || die "skills directory '${SKILLS_DIR}' does not exist"
+    heading "Uploading skills from ${SKILLS_DIR}"
+    openshell_ws sandbox exec -n "${SANDBOX_NAME}" -- mkdir -p /sandbox/persist/workspace-main/skills
+    local candidate found=0
+    if [[ -f "${SKILLS_DIR}/SKILL.md" ]]; then
+        openshell_ws sandbox upload "${SANDBOX_NAME}" "${SKILLS_DIR}" /sandbox/persist/workspace-main/skills
+        return
+    fi
+    for candidate in "${SKILLS_DIR}"/*; do
+        [[ -d "${candidate}" && -f "${candidate}/SKILL.md" ]] || continue
+        openshell_ws sandbox exec -n "${SANDBOX_NAME}" -- rm -rf "/sandbox/persist/workspace-main/skills/$(basename "${candidate}")"
+        openshell_ws sandbox upload "${SANDBOX_NAME}" "${candidate}" /sandbox/persist/workspace-main/skills
+        found=1
+    done
+    (( found )) || die "no immediate skill directories with SKILL.md in '${SKILLS_DIR}'"
+}
+
+start_gateway() {
+    heading "Starting OpenClaw Gateway and forwarding Control UI"
+    local gateway_log="${TMPDIR:-/tmp}/openclaw-csb-gateway-${SANDBOX_NAME}.log"
+    openshell_ws sandbox exec -n "${SANDBOX_NAME}" -- \
+        /app/csb/entrypoint-session-workers.sh >"${gateway_log}" 2>&1 &
+    local gateway_exec_pid=$!
+    local attempt=1
+    until openshell_ws sandbox exec -n "${SANDBOX_NAME}" -- curl -fsS "http://127.0.0.1:${CONTROL_UI_PORT}/healthz" >/dev/null 2>&1; do
+        if ! kill -0 "${gateway_exec_pid}" 2>/dev/null; then
+            tail -50 "${gateway_log}" >&2 || true
+            die "Gateway process exited before becoming healthy"
+        fi
+        (( attempt < 61 )) || die "Gateway did not become healthy after 60 checks"
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+    if ! curl -fsS "http://127.0.0.1:${CONTROL_UI_PORT}/healthz" >/dev/null 2>&1; then
+        openshell_ws forward start "${CONTROL_UI_PORT}" "${SANDBOX_NAME}" --background
+    fi
+    success "OpenClaw is ready at http://localhost:${CONTROL_UI_PORT}"
+}
+
+copy_token() {
+    gateway_token="$(read_stored_token)" || die "no stored Control UI token; run create first"
+    [[ -n "${gateway_token}" ]] || die "no stored Control UI token; run create first"
+    printf '%s' "${gateway_token}" | copy_to_clipboard
+    success "Copied the Control UI token to the clipboard."
+}
+
+status() {
+    openshell_cli workspace get "${WORKSPACE}"
+    openshell_ws sandbox list
+}
+
+parse_options() {
+    while (( $# > 0 )); do
+        case "$1" in
+            --skills-dir) [[ -n "${2:-}" ]] || die "--skills-dir requires a directory"; SKILLS_DIR="$2"; shift 2 ;;
+            *) die "unknown option '$1'" ;;
+        esac
+    done
+}
+
+command="${1:-}"
+shift || true
+
+case "${command}" in
+    prepare|create|quickstart|status)
+        parse_options "$@"
+        require_command "${OPENSHELL_COMMAND}"
+        if [[ "${command}" != "prepare" && "${command}" != "status" ]]; then
+            require_command podman
+            require_command openssl
+            require_command curl
+            require_secret_store
+            require_clipboard
+        fi
+        ;;
+    token-copy)
+        require_secret_store
+        require_clipboard
+        ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+esac
+
+trap 'unset gateway_token OPENAI_API_KEY' EXIT
+
+case "${command}" in
+    prepare) prepare ;;
+    create) create ;;
+    quickstart) prepare; create; upload_skills; start_gateway ;;
+    token-copy) copy_token ;;
+    status) status ;;
+esac

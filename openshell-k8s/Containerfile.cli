@@ -1,0 +1,7 @@
+FROM registry.fedoraproject.org/fedora:latest
+
+COPY openshell /usr/local/bin/openshell
+RUN chmod 0555 /usr/local/bin/openshell
+
+USER 1001
+ENTRYPOINT ["/usr/local/bin/openshell"]

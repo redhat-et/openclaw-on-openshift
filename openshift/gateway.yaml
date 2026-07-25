@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openclaw-gateway
+  namespace: sallyom-openshell-openclaw
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openclaw-state
+  namespace: sallyom-openshell-openclaw
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw-gateway
+  namespace: sallyom-openshell-openclaw
+  labels:
+    app.kubernetes.io/name: openclaw-gateway
+    app.kubernetes.io/part-of: openclaw-openshell-poc
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openclaw-gateway
+    spec:
+      serviceAccountName: openclaw-gateway
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: gateway
+          image: quay.io/sallyom/openclaw-openshell-csb:amd64-ocp
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: control-ui
+              containerPort: 18791
+          env:
+            - name: OPENCLAW_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-gateway-token
+                  key: token
+            - name: OPENCLAW_OPENSHELL_WORKSPACE
+              value: openclaw-csb
+            - name: OPENCLAW_OPENSHELL_WORKER_IMAGE
+              value: quay.io/sallyom/openclaw-openshell:latest
+            - name: OPENCLAW_OPENSHELL_GATEWAY_ENDPOINT
+              value: https://sallyom-openshell.sallyom-openshell-remote.svc.cluster.local:8080
+            - name: OPENCLAW_OPENSHELL_CONTROL_UI_PORT
+              value: "18791"
+            - name: OPENCLAW_OPENSHELL_INFERENCE_PROVIDER
+              value: openai
+            - name: OPENCLAW_OPENSHELL_OPENCLAW_PROVIDER
+              value: openai
+            - name: OPENCLAW_OPENSHELL_INFERENCE_MODEL
+              value: gpt-5.5
+            - name: OPENCLAW_OPENSHELL_INFERENCE_API
+              value: openai-responses
+            - name: OPENCLAW_OPENSHELL_TOKEN_FILE
+              value: /run/openshell/auth/token
+            - name: OPENCLAW_OPENSHELL_CA_FILE
+              value: /etc/openshell-tls/client/ca.crt
+            # Set this to the generated Route URL before applying in a new
+            # cluster; it is intentionally not inferred inside the Pod.
+            - name: OPENCLAW_PUBLIC_URL
+              value: https://openclaw-sallyom-openshell-openclaw.apps.example.com
+          volumeMounts:
+            - name: state
+              mountPath: /sandbox/persist
+            - name: openshell-client-tls
+              mountPath: /etc/openshell-tls/client
+              readOnly: true
+            - name: openshell-worker-oidc
+              mountPath: /run/openshell/auth/token
+              subPath: token
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: control-ui
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: openclaw-state
+        - name: openshell-client-tls
+          secret:
+            secretName: openshell-client-tls
+            optional: false
+        - name: openshell-worker-oidc
+          secret:
+            secretName: openshell-worker-oidc
+            optional: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-gateway
+  namespace: sallyom-openshell-openclaw
+spec:
+  selector:
+    app.kubernetes.io/name: openclaw-gateway
+  ports:
+    - name: control-ui
+      port: 18791
+      targetPort: control-ui

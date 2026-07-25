@@ -1,0 +1,16 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: openclaw
+  namespace: sallyom-openshell-openclaw
+  annotations:
+    haproxy.router.openshift.io/timeout: 30m
+spec:
+  to:
+    kind: Service
+    name: openclaw-gateway
+  port:
+    targetPort: control-ui
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

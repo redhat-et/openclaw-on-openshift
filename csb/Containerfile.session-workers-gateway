@@ -1,0 +1,36 @@
+# WIP Gateway image for the OpenShell session-worker CSB.
+#
+# Build from a locally built/pushed OpenClaw image from the
+# openshell-session-workers branch. The Gateway uses the sandbox-scoped
+# delegated OpenShell capability; it does not receive a client mTLS key.
+ARG OPENCLAW_IMAGE=quay.io/sallyom/openclaw-openshell:latest
+ARG OPENCLAW_OPENSHELL_CLI=csb/openshell-cli
+FROM ${OPENCLAW_IMAGE}
+ARG OPENCLAW_OPENSHELL_CLI
+
+USER root
+
+# This overlay writes its OpenClaw configuration at runtime; it is not a
+# Nix-managed installation even when its CSB base image enables that mode.
+ENV OPENCLAW_NIX_MODE=
+
+COPY csb/openclaw-install-policy /usr/local/bin/openclaw-install-policy
+COPY ${OPENCLAW_OPENSHELL_CLI} /usr/local/bin/openshell-bin
+COPY csb/openshell-wrapper.sh /usr/local/bin/openshell
+COPY csb/configure-session-workers.mjs /app/csb/configure-session-workers.mjs
+COPY csb/entrypoint-session-workers.sh /app/csb/entrypoint-session-workers.sh
+
+RUN chmod 0755 \
+      /usr/local/bin/openclaw-install-policy \
+      /usr/local/bin/openshell-bin \
+      /usr/local/bin/openshell \
+      /app/csb/configure-session-workers.mjs \
+      /app/csb/entrypoint-session-workers.sh && \
+    mkdir -p /etc/openshell/tls/client /etc/openshell/auth && \
+    ln -s /etc/openshell-tls/client/ca.crt /etc/openshell/tls/client/ca.crt && \
+    ln -s /etc/openshell-tls/client/tls.crt /etc/openshell/tls/client/tls.crt && \
+    ln -s /etc/openshell-tls/client/tls.key /etc/openshell/tls/client/tls.key && \
+    ln -s /var/run/secrets/openshell/token /etc/openshell/auth/sandbox.jwt
+
+USER 1000:1000
+ENTRYPOINT ["/app/csb/entrypoint-session-workers.sh"]

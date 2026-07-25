@@ -2,3 +2,4 @@ THREAT-MODEL-DRAFT.md
 csb-setup.sh
 __pycache__/
 *.pyc
+csb/openshell-cli
