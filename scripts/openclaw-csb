@@ -174,6 +174,14 @@ load_existing_token() {
     die "no stored Control UI token; run './scripts/openclaw-csb create' first"
 }
 
+ensure_network() {
+    if podman network inspect openshell >/dev/null 2>&1; then
+        return
+    fi
+
+    podman network create openshell >/dev/null
+}
+
 ensure_volume() {
     if podman volume inspect "${VOLUME_NAME}" >/dev/null 2>&1; then
         return
@@ -214,6 +222,7 @@ create() {
     fi
 
     heading "Creating sandbox"
+    ensure_network
     ensure_volume
     load_or_create_token
 

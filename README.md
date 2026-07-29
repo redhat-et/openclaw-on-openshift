@@ -34,7 +34,7 @@ The CSB image is pinned to OpenClaw `v2026.7.1`. The local endpoint is
 
 ## Prerequisites
 
-- Podman with a running Podman machine where required by the host OS
+- Podman with a running Podman machine where required by the host OS and the `openshell` Podman network created (`podman network create openshell`)
 - OpenShell `0.0.86` or later, with a local Podman-backed gateway selected
 - `openssl`
 - An OpenAI API key

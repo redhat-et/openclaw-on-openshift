@@ -12,6 +12,7 @@ The named Podman volume survives sandbox recreation and keeps OpenClaw state,
 device pairing, conversations, and workspace skills.
 
 ```bash
+podman network create --ignore openshell
 podman volume create openclaw-csb-data
 podman run --rm \
   --user 0 \
