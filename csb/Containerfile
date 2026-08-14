@@ -213,7 +213,7 @@ RUN node --version
 # this runtime base is RHEL 10.2, not Fedora, and the musl build has zero
 # dynamic dependencies (verified: `file` reports "statically linked,
 # stripped"), so it drops in without any glibc/soname compatibility risk.
-ARG OPENSHELL_VERSION=0.0.99
+ARG OPENSHELL_VERSION=0.0.106
 RUN set -eux; \
     arch="$(uname -m)"; \
     openshell_base_url="https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}"; \
