@@ -24,10 +24,15 @@ ARG CSB_BASE_IMAGE=quay.io/redhat-et/openshell:base-2026.07.16@sha256:15146a75be
 # ---------------------------------------------------------------------------
 # Stage 1: Builder — compile OpenClaw from source
 # ---------------------------------------------------------------------------
-# Node 22 for build — Node 24 from UBI has SQLite 3.46.1 which OpenClaw
-# rejects during postinstall. The runtime stage overrides with upstream
-# Node 24 (bookworm-slim) that bundles the corrected SQLite 3.51.3+.
-FROM registry.access.redhat.com/ubi10/nodejs-22@sha256:2c1743a8715377414ecb9af86076d6fb4fb566418ddde09ffd96a23d7a8d938f AS builder
+# TESTING: swapped from ubi10/nodejs-22 to the Hardened Images (Fedora
+# Hummingbird) nodejs:24-builder. Both ubi10/nodejs-22 and ubi10/nodejs-24
+# ship SQLite 3.46.1 (rejected by OpenClaw's plugin-state store); this one
+# has 3.53.4, verified directly:
+#   node -e "require('node:sqlite').DatabaseSync(':memory:')..." -> 3.53.4
+# Still dnf-based (git/python3/make/gcc/gcc-c++ install unchanged below).
+# If this holds up, the runtime stage's separate Node-24-bookworm-slim
+# binary swap (below) may become unnecessary too — not yet verified.
+FROM registry.access.redhat.com/hi/nodejs@sha256:52ea553eff206e75c3dec4ab689c7daa49ec3b81103f2b26e7b82cc7800f61ce AS builder
 
 LABEL stage="builder"
 
@@ -47,8 +52,12 @@ RUN dnf install -y \
 
 RUN npm install -g pnpm@11.2.2
 
-ARG OPENCLAW_REF=v2026.7.1
-ARG OPENCLAW_COMMIT=2d2ddc43d0dcf71f31283d780f9fe9ff4cc04fe4
+# TESTING ONLY: pinned to a v2026.7.2 beta because it's the first tag with
+# scripts/lib/docker-plugin-selection.mjs (needed to select the openshell
+# extension below). No stable tag has this yet. Switch back to a stable
+# OPENCLAW_REF once 2026.7.2 ships.
+ARG OPENCLAW_REF=v2026.7.2-beta.7
+ARG OPENCLAW_COMMIT=dabe1915362e20c25704af91612a32a8f4c96e83
 RUN git clone --depth 1 --branch "${OPENCLAW_REF}" https://github.com/openclaw/openclaw.git . && \
     test "$(git rev-parse HEAD)" = "${OPENCLAW_COMMIT}"
 
@@ -197,6 +206,25 @@ USER root
 # Node binary bundles SQLite 3.51.3+.
 COPY --from=node-runtime /usr/local/bin/node /usr/bin/node
 RUN node --version
+
+# openshell CLI, required at runtime by the openshell-sandbox plugin (see
+# extensions/openshell's own docs: "openshell CLI on PATH"). Installed from
+# the static musl release tarball rather than the .fc44 RPM tank-os uses --
+# this runtime base is RHEL 10.2, not Fedora, and the musl build has zero
+# dynamic dependencies (verified: `file` reports "statically linked,
+# stripped"), so it drops in without any glibc/soname compatibility risk.
+ARG OPENSHELL_VERSION=0.0.99
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    openshell_base_url="https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}"; \
+    openshell_tarball="openshell-${arch}-unknown-linux-musl.tar.gz"; \
+    curl -fsSL -o "/tmp/${openshell_tarball}" "${openshell_base_url}/${openshell_tarball}"; \
+    curl -fsSL -o /tmp/openshell-checksums-sha256.txt "${openshell_base_url}/openshell-checksums-sha256.txt"; \
+    (cd /tmp && grep -E " ${openshell_tarball}\$" openshell-checksums-sha256.txt | sha256sum -c -); \
+    tar -xzf "/tmp/${openshell_tarball}" -C /usr/local/bin openshell; \
+    chmod 0755 /usr/local/bin/openshell; \
+    rm -f "/tmp/${openshell_tarball}" /tmp/openshell-checksums-sha256.txt; \
+    openshell --version
 
 # Install the repository policy and the root-owned OpenClaw install-policy
 # executable. The latter rejects runtime skill and plugin installation.
