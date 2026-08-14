@@ -193,6 +193,8 @@ jobs:
     timeout-minutes: 60
     needs: [upstream, base]
     if: needs.upstream.outputs.should_build == 'true'
+    outputs:
+      oc_version: ${{ steps.meta.outputs.oc_version }}
     strategy:
       fail-fast: false
       matrix:
@@ -226,15 +228,36 @@ jobs:
 
       - name: Compute tags
         id: meta
-        env:
-          OC_VERSION: ${{ needs.upstream.outputs.openclaw_version }}
-          OC_REF: ${{ inputs.openclaw_ref || needs.upstream.outputs.openclaw_version || 'main' }}
         run: |
           SHORT_SHA="${{ needs.upstream.outputs.short_sha }}"
           DATE="${{ needs.upstream.outputs.build_date }}"
           BASE="${{ env.CSB_IMAGE_REF }}"
           PREFIX="csb-${{ matrix.arch }}-"
           REF_OVERRIDE="${{ inputs.openclaw_ref }}"
+
+          if [[ -n "${REF_OVERRIDE}" ]]; then
+            # Explicit override: resolve its commit so the Containerfile's
+            # integrity check (git rev-parse HEAD == OPENCLAW_COMMIT) can
+            # verify this ref instead of failing against the default pin.
+            OC_VERSION="${REF_OVERRIDE}"
+            REPO_URL="https://github.com/openclaw/openclaw.git"
+            MATCHES="$(git ls-remote "${REPO_URL}" "refs/tags/${OC_VERSION}" "refs/tags/${OC_VERSION}^{}" "refs/heads/${OC_VERSION}")"
+            if [[ -n "${MATCHES}" ]]; then
+              OC_COMMIT="$(echo "${MATCHES}" | grep '\^{}$' | awk '{print $1}' | head -1)"
+              [[ -z "${OC_COMMIT}" ]] && OC_COMMIT="$(echo "${MATCHES}" | awk '{print $1}' | head -1)"
+            else
+              # Not a resolvable tag/branch name on the remote -- assume
+              # it's already a commit SHA.
+              OC_COMMIT="${OC_VERSION}"
+            fi
+          else
+            # No override: build exactly what csb/Containerfile pins by
+            # default, so the integrity check verifies a reviewed ref
+            # instead of racing ahead of it with whatever upstream's
+            # latest release happens to be.
+            OC_VERSION="$(grep -m1 '^ARG OPENCLAW_REF=' csb/Containerfile | cut -d= -f2)"
+            OC_COMMIT=""
+          fi
 
           TAGS="${BASE}:${PREFIX}${DATE} ${BASE}:${PREFIX}git-${SHORT_SHA}"
 
@@ -250,8 +273,8 @@ jobs:
           fi
 
           echo "tags=${TAGS}" >> "${GITHUB_OUTPUT}"
-          echo "oc_ref=${OC_REF}" >> "${GITHUB_OUTPUT}"
           echo "oc_version=${OC_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "oc_commit=${OC_COMMIT}" >> "${GITHUB_OUTPUT}"
           echo "date=${DATE}" >> "${GITHUB_OUTPUT}"
           echo "short_sha=${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
           echo "primary_tag=${BASE}:${PREFIX}${DATE}" >> "${GITHUB_OUTPUT}"
@@ -269,9 +292,14 @@ jobs:
             EXT_ARG="--build-arg OPENCLAW_EXTENSIONS=${EXTENSIONS}"
           fi
 
+          REF_ARGS=""
+          if [ -n "${{ steps.meta.outputs.oc_commit }}" ]; then
+            REF_ARGS="--build-arg OPENCLAW_REF=${{ steps.meta.outputs.oc_version }} --build-arg OPENCLAW_COMMIT=${{ steps.meta.outputs.oc_commit }}"
+          fi
+
           docker build \
             -f csb/Containerfile \
-            --build-arg OPENCLAW_REF=${{ steps.meta.outputs.oc_ref }} \
+            ${REF_ARGS} \
             --build-arg CSB_BASE_IMAGE=${{ env.BASE_IMAGE_REF }}:base-${{ matrix.arch }}-latest \
             ${EXT_ARG} \
             --label org.opencontainers.image.title="OpenClaw CSB" \
@@ -381,6 +409,8 @@ jobs:
     timeout-minutes: 60
     needs: upstream
     if: needs.upstream.outputs.should_build == 'true'
+    outputs:
+      oc_version: ${{ steps.meta.outputs.oc_version }}
     strategy:
       fail-fast: false
       matrix:
@@ -414,15 +444,36 @@ jobs:
 
       - name: Compute tags
         id: meta
-        env:
-          OC_VERSION: ${{ needs.upstream.outputs.openclaw_version }}
-          OC_REF: ${{ inputs.openclaw_ref || needs.upstream.outputs.openclaw_version || 'main' }}
         run: |
           SHORT_SHA="${{ needs.upstream.outputs.short_sha }}"
           DATE="${{ needs.upstream.outputs.build_date }}"
           BASE="${{ env.CSB_IMAGE_REF }}"
           PREFIX="csb-openclaw-only-${{ matrix.arch }}-"
           REF_OVERRIDE="${{ inputs.openclaw_ref }}"
+
+          if [[ -n "${REF_OVERRIDE}" ]]; then
+            # Explicit override: resolve its commit so the Containerfile's
+            # integrity check (git rev-parse HEAD == OPENCLAW_COMMIT) can
+            # verify this ref instead of failing against the default pin.
+            OC_VERSION="${REF_OVERRIDE}"
+            REPO_URL="https://github.com/openclaw/openclaw.git"
+            MATCHES="$(git ls-remote "${REPO_URL}" "refs/tags/${OC_VERSION}" "refs/tags/${OC_VERSION}^{}" "refs/heads/${OC_VERSION}")"
+            if [[ -n "${MATCHES}" ]]; then
+              OC_COMMIT="$(echo "${MATCHES}" | grep '\^{}$' | awk '{print $1}' | head -1)"
+              [[ -z "${OC_COMMIT}" ]] && OC_COMMIT="$(echo "${MATCHES}" | awk '{print $1}' | head -1)"
+            else
+              # Not a resolvable tag/branch name on the remote -- assume
+              # it's already a commit SHA.
+              OC_COMMIT="${OC_VERSION}"
+            fi
+          else
+            # No override: build exactly what csb/Containerfile.openclaw
+            # pins by default, so the integrity check verifies a reviewed
+            # ref instead of racing ahead of it with whatever upstream's
+            # latest release happens to be.
+            OC_VERSION="$(grep -m1 '^ARG OPENCLAW_REF=' csb/Containerfile.openclaw | cut -d= -f2)"
+            OC_COMMIT=""
+          fi
 
           TAGS="${BASE}:${PREFIX}${DATE} ${BASE}:${PREFIX}git-${SHORT_SHA}"
 
@@ -438,8 +489,8 @@ jobs:
           fi
 
           echo "tags=${TAGS}" >> "${GITHUB_OUTPUT}"
-          echo "oc_ref=${OC_REF}" >> "${GITHUB_OUTPUT}"
           echo "oc_version=${OC_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "oc_commit=${OC_COMMIT}" >> "${GITHUB_OUTPUT}"
           echo "date=${DATE}" >> "${GITHUB_OUTPUT}"
           echo "short_sha=${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
           echo "primary_tag=${BASE}:${PREFIX}${DATE}" >> "${GITHUB_OUTPUT}"
@@ -451,9 +502,14 @@ jobs:
             TAG_ARGS="${TAG_ARGS} -t ${TAG}"
           done
 
+          REF_ARGS=""
+          if [ -n "${{ steps.meta.outputs.oc_commit }}" ]; then
+            REF_ARGS="--build-arg OPENCLAW_REF=${{ steps.meta.outputs.oc_version }} --build-arg OPENCLAW_COMMIT=${{ steps.meta.outputs.oc_commit }}"
+          fi
+
           docker build \
             -f csb/Containerfile.openclaw \
-            --build-arg OPENCLAW_REF=${{ steps.meta.outputs.oc_ref }} \
+            ${REF_ARGS} \
             --label org.opencontainers.image.title="OpenClaw CSB (OpenClaw-only)" \
             --label org.opencontainers.image.revision=${{ github.sha }} \
             --label org.opencontainers.image.version=${{ steps.meta.outputs.oc_version }} \
@@ -567,7 +623,8 @@ jobs:
           CSB: ${{ env.CSB_IMAGE_REF }}
           DATE: ${{ needs.upstream.outputs.build_date }}
           SHORT_SHA: ${{ needs.upstream.outputs.short_sha }}
-          OC_VERSION: ${{ needs.upstream.outputs.openclaw_version }}
+          OC_VERSION: ${{ needs.build.outputs.oc_version }}
+          OC_OPENCLAW_ONLY_VERSION: ${{ needs['build-openclaw-only'].outputs.oc_version }}
         run: |
           create_manifest() {
             local REPO="$1" TAG="$2"
@@ -627,8 +684,8 @@ jobs:
             docker manifest push "${CSB}:csb-openclaw-only-latest"
           fi
 
-          if [[ "${OC_VERSION}" != "unknown" && -n "${OC_VERSION}" ]]; then
-            docker manifest create "${CSB}:csb-openclaw-only-openclaw-${OC_VERSION}" \
-              "${CSB}:csb-openclaw-only-amd64-openclaw-${OC_VERSION}" "${CSB}:csb-openclaw-only-arm64-openclaw-${OC_VERSION}"
-            docker manifest push "${CSB}:csb-openclaw-only-openclaw-${OC_VERSION}"
+          if [[ "${OC_OPENCLAW_ONLY_VERSION}" != "unknown" && -n "${OC_OPENCLAW_ONLY_VERSION}" ]]; then
+            docker manifest create "${CSB}:csb-openclaw-only-openclaw-${OC_OPENCLAW_ONLY_VERSION}" \
+              "${CSB}:csb-openclaw-only-amd64-openclaw-${OC_OPENCLAW_ONLY_VERSION}" "${CSB}:csb-openclaw-only-arm64-openclaw-${OC_OPENCLAW_ONLY_VERSION}"
+            docker manifest push "${CSB}:csb-openclaw-only-openclaw-${OC_OPENCLAW_ONLY_VERSION}"
           fi
