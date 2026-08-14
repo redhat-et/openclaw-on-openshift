@@ -190,6 +190,31 @@ LABEL name="openclaw-csb-openclaw" \
 
 USER root
 
+# gog CLI (github.com/openclaw/gogcli) — Google Workspace (Gmail, Calendar,
+# Drive, Docs, Sheets, ...) from the terminal. Static Go binary, checksum
+# verified, same install pattern as csb/Containerfile's openshell CLI.
+# Release tarballs use Go-style arch names, unlike OpenShell's uname -m names.
+# This base has no system `tar`/`gzip` (unlike csb/Containerfile's OpenShell
+# base image), so install them via dnf to extract the release tarball below.
+ARG GOGCLI_VERSION=0.37.0
+RUN dnf install -y tar gzip && dnf clean all
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    case "$arch" in \
+      x86_64) gogcli_arch=amd64 ;; \
+      aarch64) gogcli_arch=arm64 ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    gogcli_base_url="https://github.com/openclaw/gogcli/releases/download/v${GOGCLI_VERSION}"; \
+    gogcli_tarball="gogcli_${GOGCLI_VERSION}_linux_${gogcli_arch}.tar.gz"; \
+    curl -fsSL -o "/tmp/${gogcli_tarball}" "${gogcli_base_url}/${gogcli_tarball}"; \
+    curl -fsSL -o /tmp/gogcli-checksums.txt "${gogcli_base_url}/checksums.txt"; \
+    (cd /tmp && grep -E " ${gogcli_tarball}\$" gogcli-checksums.txt | sha256sum -c -); \
+    tar -xzf "/tmp/${gogcli_tarball}" -C /usr/local/bin ./gog; \
+    chmod 0755 /usr/local/bin/gog; \
+    rm -f "/tmp/${gogcli_tarball}" /tmp/gogcli-checksums.txt; \
+    gog --version
+
 # The Hardened Image bundles the full npm CLI and its vendored dependencies
 # (including, at the time of writing, an outdated `tar` with a known CVE --
 # see CVE-2026-59873). The compiled OpenClaw app only invokes `node`

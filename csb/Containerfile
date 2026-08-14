@@ -226,6 +226,28 @@ RUN set -eux; \
     rm -f "/tmp/${openshell_tarball}" /tmp/openshell-checksums-sha256.txt; \
     openshell --version
 
+# gog CLI (github.com/openclaw/gogcli) — Google Workspace (Gmail, Calendar,
+# Drive, Docs, Sheets, ...) from the terminal. Static Go binary, checksum
+# verified, same install pattern as the openshell CLI above. Release
+# tarballs use Go-style arch names, unlike OpenShell's uname -m names.
+ARG GOGCLI_VERSION=0.37.0
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    case "$arch" in \
+      x86_64) gogcli_arch=amd64 ;; \
+      aarch64) gogcli_arch=arm64 ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    gogcli_base_url="https://github.com/openclaw/gogcli/releases/download/v${GOGCLI_VERSION}"; \
+    gogcli_tarball="gogcli_${GOGCLI_VERSION}_linux_${gogcli_arch}.tar.gz"; \
+    curl -fsSL -o "/tmp/${gogcli_tarball}" "${gogcli_base_url}/${gogcli_tarball}"; \
+    curl -fsSL -o /tmp/gogcli-checksums.txt "${gogcli_base_url}/checksums.txt"; \
+    (cd /tmp && grep -E " ${gogcli_tarball}\$" gogcli-checksums.txt | sha256sum -c -); \
+    tar -xzf "/tmp/${gogcli_tarball}" -C /usr/local/bin ./gog; \
+    chmod 0755 /usr/local/bin/gog; \
+    rm -f "/tmp/${gogcli_tarball}" /tmp/gogcli-checksums.txt; \
+    gog --version
+
 # Install the repository policy and the root-owned OpenClaw install-policy
 # executable. The latter rejects runtime skill and plugin installation.
 COPY csb/policy.yaml /etc/openshell/policy.yaml
