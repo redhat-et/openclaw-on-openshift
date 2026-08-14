@@ -190,6 +190,16 @@ LABEL name="openclaw-csb-openclaw" \
 
 USER root
 
+# The Hardened Image bundles the full npm CLI and its vendored dependencies
+# (including, at the time of writing, an outdated `tar` with a known CVE --
+# see CVE-2026-59873). The compiled OpenClaw app only invokes `node`
+# directly (see csb/openclaw-wrapper) and never shells out to npm at
+# runtime, so remove it via the package manager rather than carry that
+# extra attack surface.
+RUN NPM_PKG="$(rpm -qf "$(command -v npm)")" && \
+    dnf remove -y "${NPM_PKG}" && \
+    dnf clean all
+
 # Non-root runtime user. Unlike csb/Containerfile, there's no OpenShell base
 # image providing a pre-made sandbox user, so create one directly.
 RUN groupadd -g 1001 openclaw && \
