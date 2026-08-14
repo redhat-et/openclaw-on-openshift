@@ -1,0 +1,229 @@
+# =============================================================================
+# OpenClaw CSB — OpenClaw-only variant (no OpenShell)
+# File: csb/Containerfile.openclaw
+#
+# Build context: repo root (.)
+# Build command:
+#   podman build -f csb/Containerfile.openclaw -t ...:csb-openclaw-latest .
+#
+# Two-stage build:
+#   builder — Hardened Images nodejs:24-builder compiles OpenClaw from source
+#   runtime — same Hardened Images base, compiled dist + Node.js
+#
+# Unlike csb/Containerfile, this image has no OpenShell CLI, no OpenShell
+# sandbox policy, and does not opt in the openshell OpenClaw extension
+# (which is excluded from the build by default upstream — see OPENCLAW_EXTENSIONS
+# below). Everything else — the CSB hardening (install-policy, locked-down
+# entrypoint config) — is unchanged from csb/Containerfile.
+# =============================================================================
+
+# Same Hardened Image (Fedora Hummingbird nodejs:24-builder) used for both
+# stages — it ships SQLite 3.53.4, so no separate Node-runtime stage or
+# binary swap is needed to work around OpenClaw's plugin-state store
+# rejecting older SQLite (see csb/Containerfile's builder-stage comment).
+ARG NODE_IMAGE=registry.access.redhat.com/hi/nodejs@sha256:52ea553eff206e75c3dec4ab689c7daa49ec3b81103f2b26e7b82cc7800f61ce
+
+# ---------------------------------------------------------------------------
+# Stage 1: Builder — compile OpenClaw from source
+# ---------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS builder
+
+LABEL stage="builder"
+
+USER root
+WORKDIR /build
+
+ENV CI=true
+
+RUN dnf install -y \
+      git \
+      python3 \
+      make \
+      gcc \
+      gcc-c++ && \
+    dnf clean all && \
+    rm -rf /var/cache/dnf
+
+RUN npm install -g pnpm@11.2.2
+
+# TESTING ONLY: pinned to a v2026.7.2 beta because it's the first tag with
+# scripts/lib/docker-plugin-selection.mjs. No stable tag has this yet.
+# Switch back to a stable OPENCLAW_REF once 2026.7.2 ships.
+ARG OPENCLAW_REF=v2026.7.2-beta.7
+ARG OPENCLAW_COMMIT=dabe1915362e20c25704af91612a32a8f4c96e83
+RUN git clone --depth 1 --branch "${OPENCLAW_REF}" https://github.com/openclaw/openclaw.git . && \
+    test "$(git rev-parse HEAD)" = "${OPENCLAW_COMMIT}"
+
+# Extension selection — falls back to pnpm build on older release tags.
+# Left empty on purpose: extensions like openshell are excluded from the
+# build by default upstream (see package.json's "files" opt-out list) and
+# OPENCLAW_EXTENSIONS only opts specific ones back in. Leaving this empty
+# means this image never gets the openshell extension's code at all.
+ARG OPENCLAW_EXTENSIONS=""
+RUN if [ -f scripts/lib/docker-plugin-selection.mjs ]; then \
+      node scripts/lib/docker-plugin-selection.mjs extensions "${OPENCLAW_EXTENSIONS}" \
+        > /tmp/openclaw-selected-plugin-dirs; \
+      touch /tmp/openclaw-plugin-selection-supported; \
+      echo "Selected extensions:" && cat /tmp/openclaw-selected-plugin-dirs; \
+    elif [ -n "${OPENCLAW_EXTENSIONS}" ]; then \
+      echo "ERROR: OPENCLAW_EXTENSIONS='${OPENCLAW_EXTENSIONS}' was requested but scripts/lib/docker-plugin-selection.mjs is not available on this ref" >&2; \
+      exit 1; \
+    else \
+      echo "Extension selection script not available on this ref — all extensions will be built"; \
+    fi
+
+RUN pnpm install --frozen-lockfile
+
+# Compile TypeScript → dist/
+RUN set -eu; \
+    if [ -f /tmp/openclaw-plugin-selection-supported ]; then \
+      selected_plugin_dirs="$(cat /tmp/openclaw-selected-plugin-dirs)"; \
+      OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS="$selected_plugin_dirs" \
+      OPENCLAW_RUN_NODE_SKIP_DTS_BUILD=1 \
+      NODE_OPTIONS="--max-old-space-size=8192" \
+      pnpm_config_verify_deps_before_run=false pnpm build:docker; \
+    else \
+      NODE_OPTIONS="--max-old-space-size=8192" \
+      pnpm build; \
+    fi
+RUN pnpm_config_verify_deps_before_run=false pnpm ui:build || pnpm ui:build
+
+# Reconcile node_modules to production dependencies from the committed lockfile.
+# Offline mode prevents this reduction step from introducing network drift.
+RUN pnpm install --prod --offline --frozen-lockfile
+
+# The production install recreates workspace links. Materialize them only after
+# dependency selection so deleting packages/ cannot leave dangling runtime
+# dependencies such as @openclaw/ai.
+RUN find node_modules -type l | while IFS= read -r link; do \
+      target="$(readlink -f "$link")"; \
+      case "$target" in \
+        /build/packages/*|/build/extensions/*) \
+          test -e "$target"; \
+          rm "$link" && cp -a "$target" "$link" && \
+          echo "Resolved workspace link: $link" \
+          ;; \
+      esac; \
+    done; \
+    ! find node_modules -type l | while IFS= read -r link; do \
+      target="$(readlink -f "$link")"; \
+      case "$target" in \
+        /build/packages/*|/build/extensions/*) echo "$link"; break ;; \
+      esac; \
+    done | grep -q .
+
+# Strip non-runtime artifacts from the selected production dependencies.
+RUN set -eu; \
+    find node_modules -maxdepth 4 \( \
+        -name "*.md"        -o -name "*.MD"      \
+        -o -name "*.txt"    -o -name "*.map"      \
+        -o -name "CHANGELOG*" -o -name "LICENCE*" \
+        -o -name "LICENSE"  -o -name "AUTHORS"    \
+        -o -name ".travis.yml" -o -name ".eslintrc*" \
+        -o -name "Makefile" -o -name "*.sh"       \
+    \) -delete; \
+    find node_modules -maxdepth 5 -type d \( \
+        -name "__tests__" -o -name "test"  \
+        -o -name "tests"  -o -name "spec"  \
+        -o -name ".github" -o -name ".circleci" \
+        -o -name "example" -o -name "examples"  \
+    \) -exec rm -rf {} + 2>/dev/null || true; \
+    find node_modules -maxdepth 6 -name "*.ts" ! -name "*.d.ts" -delete; \
+    find node_modules -maxdepth 6 -name "*.js.map" -delete; \
+    ARCH=$(uname -m); \
+    if [ "$ARCH" = "x86_64" ]; then \
+      find node_modules -maxdepth 6 \( \
+          -name "*darwin*" -o -name "*win32*" \
+          -o -name "*freebsd*" -o -name "*linux-arm*" \
+      \) -name "*.node" -delete 2>/dev/null || true; \
+    else \
+      find node_modules -maxdepth 6 \( \
+          -name "*darwin*" -o -name "*win32*" \
+          -o -name "*freebsd*" -o -name "*linux-x64*" \
+      \) -name "*.node" -delete 2>/dev/null || true; \
+    fi; \
+    pnpm store prune --force 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Minimize attack surface — remove everything not needed at runtime.
+# ---------------------------------------------------------------------------
+
+# 1. Prune unselected extension dist and their exclusive node_modules deps.
+RUN if [ -f scripts/prune-docker-plugin-dist.mjs ] && [ -f scripts/postinstall-bundled-plugins.mjs ] && [ -f /tmp/openclaw-plugin-selection-supported ]; then \
+      OPENCLAW_EXTENSIONS="$(cat /tmp/openclaw-selected-plugin-dirs)" \
+      OPENCLAW_BUNDLED_PLUGIN_DIR=extensions \
+      node scripts/prune-docker-plugin-dist.mjs && \
+      node scripts/postinstall-bundled-plugins.mjs; \
+    fi
+
+# 2. Remove ALL extension/package source (only compiled dist/ is needed).
+RUN rm -rf extensions/ packages/ patches/
+
+# 3. Strip build tooling, VCS metadata, and dev artifacts.
+RUN rm -rf .git .github .gitignore .gitattributes \
+           .eslintrc* .prettierrc* .editorconfig \
+           tsconfig*.json \
+           pnpm-lock.yaml package-lock.json yarn.lock \
+           pnpm-workspace.yaml .npmrc openclaw.mjs \
+           tests test __tests__ \
+           scripts \
+           examples \
+           ui/src/ \
+           CONTRIBUTING.md SECURITY.md CHANGELOG.md \
+           /tmp/openclaw-selected-plugin-dirs 2>/dev/null || true
+
+# 4. Remove .d.ts and source maps from dist.
+RUN find dist -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' \) -delete 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Stage 2: Runtime — Hardened Image + compiled OpenClaw (no OpenShell)
+# ---------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS runtime
+
+LABEL name="openclaw-csb-openclaw" \
+      maintainer="Ryan Nix <ryan.nix@gmail.com>" \
+      summary="OpenClaw CSB — locked-down agent gateway (OpenClaw only, no OpenShell)" \
+      description="OpenClaw built from source for Corporate Standard Build, without the OpenShell sandbox integration" \
+      io.k8s.display-name="OpenClaw CSB (OpenClaw-only)" \
+      io.openshift.expose-services="18789:http" \
+      io.openshift.tags="ai,agent,nodejs,csb"
+
+USER root
+
+# Non-root runtime user. Unlike csb/Containerfile, there's no OpenShell base
+# image providing a pre-made sandbox user, so create one directly.
+RUN groupadd -g 1001 openclaw && \
+    useradd -u 1001 -g 0 -G openclaw -m -d /sandbox -s /bin/bash openclaw && \
+    chown -R 1001:0 /sandbox && \
+    chmod -R g=u /sandbox
+
+# Install the repository policy and the root-owned OpenClaw install-policy
+# executable. The latter rejects runtime skill and plugin installation.
+COPY csb/openclaw-install-policy /usr/local/bin/openclaw-install-policy
+COPY csb/openclaw-wrapper /usr/local/bin/openclaw
+RUN chmod 0755 /usr/local/bin/openclaw-install-policy /usr/local/bin/openclaw
+
+RUN mkdir -p /app && chmod 0755 /app
+
+COPY --from=builder --chown=0:0 /build /app
+
+COPY --chown=0:0 csb/configure-openclaw.mjs /app/configure-openclaw.mjs
+COPY --chown=0:0 csb/entrypoint.sh /app/entrypoint.sh
+RUN chmod 0755 /app/configure-openclaw.mjs /app/entrypoint.sh && \
+    openclaw --version
+
+# The base image sets HOME=/tmp; override so entrypoint.sh's ${HOME}/.openclaw
+# fallback resolves to the useradd-created home dir, not the ephemeral /tmp.
+ENV HOME=/sandbox \
+    OPENCLAW_WORKSPACE_DIR=/sandbox/workspace \
+    OPENCLAW_NIX_MODE=1 \
+    NODE_ENV=production \
+    PATH=/app/node_modules/.bin:$PATH
+
+WORKDIR /app
+
+EXPOSE 18789
+
+USER 1001
+
+ENTRYPOINT ["/app/entrypoint.sh"]
