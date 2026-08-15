@@ -29,7 +29,7 @@ base/                               -> quay.io/redhat-et/openshell:base-latest
 
 **CI pipeline:** `base (amd64 + arm64)` → `csb (amd64 + arm64)` → `multi-arch manifest`
 
-The CSB image is pinned to OpenClaw `v2026.7.1`. The local endpoint is
+The CSB image is pinned to OpenClaw `v2026.7.2-beta.7`. The local endpoint is
 `http://localhost:18789`, bound to loopback by OpenShell.
 
 ## Prerequisites
