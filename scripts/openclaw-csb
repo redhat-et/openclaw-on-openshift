@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-SANDBOX_NAME="openclaw-csb"
+SANDBOX_NAME="${OPENCLAW_CSB_SANDBOX_NAME:-openclaw-csb}"
 VOLUME_NAME="openclaw-csb-data"
 IMAGE="${OPENCLAW_CSB_IMAGE:-quay.io/redhat-et/openclaw:csb-latest}"
 TOKEN_SERVICE="com.redhat-et.openclaw-csb.gateway-token"
@@ -12,10 +12,23 @@ TOKEN_ACCOUNT="${USER:-openclaw-csb}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 POLICY_PATH="${REPO_ROOT}/csb/policy.yaml"
+FORWARD_RUNTIME_DIR="${TMPDIR:-/tmp}/openclaw-csb-forward-${UID:-user}"
+FORWARD_PID_FILE="${FORWARD_RUNTIME_DIR}/${SANDBOX_NAME}.pid"
+FORWARD_LOG_FILE="${FORWARD_RUNTIME_DIR}/${SANDBOX_NAME}.log"
+FORWARD_CONTROL_SOCKET="/tmp/openclaw-csb-${UID:-user}-${SANDBOX_NAME}.sock"
+LEGACY_WIDGET_FORWARD_PID_FILE="${FORWARD_RUNTIME_DIR}/${SANDBOX_NAME}-widget.pid"
+WIDGET_PORT="${OPENCLAW_CSB_WIDGET_PORT:-18790}"
 gateway_token=""
 SKILLS_DIR="${REPO_ROOT}/skills"
+DEFAULT_MODEL="${OPENCLAW_CSB_DEFAULT_MODEL:-}"
+MODEL_PROVIDERS="${OPENCLAW_CSB_MODEL_PROVIDERS:-}"
+INFERENCE_PROVIDER=""
+INFERENCE_MODEL=""
 declare -a allowed_skills=()
 declare -a allowed_plugins=()
+declare -a image_skills=()
+declare -a providers=()
+provider_count=0
 
 if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
     COLOR_RESET=$'\033[0m'
@@ -38,13 +51,33 @@ Usage: ./scripts/openclaw-csb <command> [options]
 Commands:
   quickstart  Create the sandbox, upload skills, start OpenClaw, and forward the UI.
   create      Create the OpenShell sandbox, reusing its host-keyring token.
+  gateway start    Start the OpenClaw gateway and wait for it to become healthy.
+  gateway stop     Stop the OpenClaw gateway without stopping the sandbox or UI forward.
+  gateway restart  Restart the OpenClaw gateway and wait for it to become healthy.
+  gateway status   Report whether the OpenClaw gateway is healthy.
   token-copy  Copy the stored Control UI token to the system clipboard.
 
 Options:
   --skills-dir <dir>    Skill directory for quickstart (default: ./skills).
+  --with <option>       Apply a repository-owned optional provider helper.
+                        Available: anthropic-api-key, google-workspace,
+                        openai-api-key, gemini.
   --allow-skill <name>  Restrict visible workspace skills (repeatable).
   --allow-plugin <name> Enable a plugin by ID (repeatable). Plugins are
                         disabled by default; this is the only way to turn one on.
+  --image-skill <name>  Copy an image-owned skill into the persistent workspace.
+  --provider <name>     Attach an OpenShell provider (repeatable; default: none).
+  --default-model <ref> Select the initial provider/model reference.
+  --inference-provider <name>
+                        Configure the workspace inference.local route provider.
+  --inference-model <id>
+                        Configure the workspace inference.local route model.
+  --model-providers <json>
+                        Supply non-secret OpenClaw model provider configuration.
+
+Optional model environment:
+  OPENCLAW_CSB_DEFAULT_MODEL selects the initial provider/model reference.
+  OPENCLAW_CSB_MODEL_PROVIDERS supplies non-secret custom provider JSON.
 EOF
 }
 
@@ -63,6 +96,15 @@ success() {
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "'$1' is required"
+}
+
+validate_widget_port() {
+    [[ "${WIDGET_PORT}" =~ ^[0-9]+$ ]] \
+        || die "OPENCLAW_CSB_WIDGET_PORT must be a numeric TCP port"
+    (( 10#${WIDGET_PORT} >= 1 && 10#${WIDGET_PORT} <= 65535 )) \
+        || die "OPENCLAW_CSB_WIDGET_PORT must be between 1 and 65535"
+    [[ "${WIDGET_PORT}" != "18789" ]] \
+        || die "OPENCLAW_CSB_WIDGET_PORT must differ from the Control UI port 18789"
 }
 
 require_secret_store() {
@@ -211,6 +253,20 @@ ensure_volume() {
         -c 'chmod 0777 /data'
 }
 
+configure_inference() {
+    if [[ -z "${INFERENCE_PROVIDER}" && -z "${INFERENCE_MODEL}" ]]; then
+        return
+    fi
+    [[ -n "${INFERENCE_PROVIDER}" && -n "${INFERENCE_MODEL}" ]] \
+        || die "--inference-provider and --inference-model must be used together"
+
+    heading "Configuring OpenShell inference.local"
+    openshell inference set \
+        --provider "${INFERENCE_PROVIDER}" \
+        --model "${INFERENCE_MODEL}"
+    success "inference.local routes to ${INFERENCE_PROVIDER}/${INFERENCE_MODEL}"
+}
+
 load_or_create_token() {
     if gateway_token="$(read_stored_token)" && [[ -n "${gateway_token}" ]]; then
         return
@@ -230,6 +286,9 @@ load_or_create_token() {
 
 create() {
     local -a create_args
+    local index
+
+    configure_inference
 
     if openshell sandbox get "${SANDBOX_NAME}" >/dev/null 2>&1; then
         success "Reusing existing sandbox: ${SANDBOX_NAME}"
@@ -248,15 +307,21 @@ create() {
         --cpu 2
         --memory 4Gi
         --policy "${POLICY_PATH}"
-        --provider openai
-        --provider github
         --driver-config-json '{"podman":{"mounts":[{"type":"volume","source":"openclaw-csb-data","target":"/sandbox/persist","read_only":false}]}}'
         --env "OPENCLAW_GATEWAY_TOKEN=${gateway_token}"
         --env OPENCLAW_STATE_DIR=/sandbox/persist/.openclaw
         --env OPENCLAW_WORKSPACE_DIR=/sandbox/persist/workspace
-        --env OPENCLAW_DEFAULT_MODEL=openai/gpt-5.5
-        --env 'OPENCLAW_PROVIDERS={"openai":{"api":"openai-responses","baseUrl":"https://api.openai.com/v1"}}'
+        --env "OPENCLAW_WIDGET_PORT=${WIDGET_PORT}"
     )
+    for (( index=0; index<provider_count; index++ )); do
+        create_args+=(--provider "${providers[$index]}")
+    done
+    if [[ -n "${DEFAULT_MODEL}" ]]; then
+        create_args+=(--env "OPENCLAW_DEFAULT_MODEL=${DEFAULT_MODEL}")
+    fi
+    if [[ -n "${MODEL_PROVIDERS}" ]]; then
+        create_args+=(--env "OPENCLAW_PROVIDERS=${MODEL_PROVIDERS}")
+    fi
     if (( ${#allowed_skills[@]} > 0 )); then
         create_args+=(--env "OPENCLAW_ALLOWED_SKILLS=$(allowed_skills_json)")
     fi
@@ -304,30 +369,200 @@ upload_skill() {
         /sandbox/persist/workspace/skills
 }
 
-start_gateway() {
+install_image_skills() {
+    local skill_name
+
+    (( ${#image_skills[@]} > 0 )) || return 0
+    for skill_name in "${image_skills[@]}"; do
+        openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+            test -f "/app/skills/${skill_name}/SKILL.md" \
+            || die "image skill '${skill_name}' does not exist"
+        openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+            rm -rf "/sandbox/persist/workspace/skills/${skill_name}"
+        openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+            cp -R "/app/skills/${skill_name}" /sandbox/persist/workspace/skills
+    done
+}
+
+gateway_is_healthy() {
+    openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+        curl -fsS http://127.0.0.1:18789/healthz >/dev/null 2>&1
+}
+
+wait_for_gateway() {
     local attempt=1
     local max_attempts=60
 
-    heading "Starting OpenClaw and forwarding the Control UI"
-    openshell sandbox exec -n "${SANDBOX_NAME}" -- \
-        /app/entrypoint.sh >/dev/null 2>&1 &
-    until openshell sandbox exec -n "${SANDBOX_NAME}" -- \
-        curl -fsS http://127.0.0.1:18789/healthz >/dev/null 2>&1; do
+    until gateway_is_healthy; do
         if (( attempt >= max_attempts )); then
             die "Gateway did not become healthy after ${max_attempts} health checks."
         fi
         sleep 1
         attempt=$((attempt + 1))
     done
-    openshell forward start 18789 "${SANDBOX_NAME}" --background
+}
+
+resolve_widget_port_from_sandbox() {
+    local configured_widget_port
+
+    configured_widget_port="$(
+        openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+            node -e '
+                const fs = require("node:fs");
+                const stateDir = process.env.OPENCLAW_STATE_DIR || "/sandbox/persist/.openclaw";
+                const configPath = process.env.OPENCLAW_CONFIG_PATH || `${stateDir}/openclaw.json`;
+                const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+                const port = config?.mcp?.apps?.sandboxPort;
+                if (Number.isInteger(port)) process.stdout.write(String(port));
+            ' 2>/dev/null
+    )" || return 0
+
+    [[ -n "${configured_widget_port}" ]] || return 0
+    WIDGET_PORT="${configured_widget_port}"
+    validate_widget_port
+}
+
+start_gateway() {
+    if gateway_is_healthy; then
+        success "OpenClaw gateway is already healthy."
+        return
+    fi
+
+    heading "Starting OpenClaw gateway"
+    openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+        /bin/sh -c 'nohup /app/entrypoint.sh >/tmp/openclaw-gateway.log 2>&1 </dev/null &'
+    wait_for_gateway
+    success "OpenClaw gateway is healthy at http://localhost:18789"
+}
+
+stop_gateway() {
+    local attempt=1
+    local max_attempts=30
+
+    heading "Stopping OpenClaw gateway"
+    if ! openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+        /bin/sh -c '
+            found=1
+            for process_dir in /proc/[0-9]*; do
+                command_line=$(tr "\000" " " < "${process_dir}/cmdline" 2>/dev/null) || continue
+                case "${command_line}" in
+                    "node /app/dist/index.js gateway "*)
+                        kill -TERM "${process_dir##*/}"
+                        found=0
+                        ;;
+                esac
+            done
+            exit "${found}"
+        ' >/dev/null 2>&1; then
+        success "OpenClaw gateway is already stopped."
+        return
+    fi
+
+    while gateway_is_healthy; do
+        if (( attempt >= max_attempts )); then
+            die "Gateway did not stop after ${max_attempts} health checks."
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+    success "OpenClaw gateway stopped."
+}
+
+ensure_forward() {
+    local attempt=1
+    local forward_command=""
+    local max_attempts=60
+    local forward_pid=""
+    local gateway_name
+    local openshell_executable
+    local proxy_command
+    local workspace_name="${OPENCLAW_CSB_OPENSHELL_WORKSPACE:-${OPENSHELL_WORKSPACE:-default}}"
+
+    mkdir -p "${FORWARD_RUNTIME_DIR}"
+    if [[ -r "${FORWARD_PID_FILE}" ]]; then
+        read -r forward_pid < "${FORWARD_PID_FILE}"
+    fi
+
+    if [[ "${forward_pid}" =~ ^[0-9]+$ ]] \
+        && kill -0 "${forward_pid}" >/dev/null 2>&1; then
+        forward_command="$(ps -p "${forward_pid}" -o command= 2>/dev/null || true)"
+        if [[ "${forward_command}" == *"openshell forward service ${SANDBOX_NAME}"* ]]; then
+            kill "${forward_pid}" >/dev/null 2>&1 || true
+            forward_pid=""
+        fi
+    fi
+    rm -f "${FORWARD_PID_FILE}"
+
+    if [[ -r "${LEGACY_WIDGET_FORWARD_PID_FILE}" ]]; then
+        local legacy_widget_pid=""
+        read -r legacy_widget_pid < "${LEGACY_WIDGET_FORWARD_PID_FILE}"
+        if [[ "${legacy_widget_pid}" =~ ^[0-9]+$ ]] \
+            && kill -0 "${legacy_widget_pid}" >/dev/null 2>&1; then
+            forward_command="$(ps -p "${legacy_widget_pid}" -o command= 2>/dev/null || true)"
+            if [[ "${forward_command}" == *"openshell forward service ${SANDBOX_NAME}"* ]]; then
+                kill "${legacy_widget_pid}" >/dev/null 2>&1 || true
+            fi
+        fi
+        rm -f "${LEGACY_WIDGET_FORWARD_PID_FILE}"
+    fi
+
+    if [[ ! -S "${FORWARD_CONTROL_SOCKET}" ]] \
+        || ! ssh -S "${FORWARD_CONTROL_SOCKET}" -O check sandbox >/dev/null 2>&1; then
+        rm -f "${FORWARD_CONTROL_SOCKET}"
+        gateway_name="${OPENCLAW_CSB_OPENSHELL_GATEWAY:-${OPENSHELL_GATEWAY:-}}"
+        if [[ -z "${gateway_name}" ]]; then
+            gateway_name="$(openshell status 2>/dev/null \
+                | awk -F': ' '$1 ~ /^[[:space:]]*Gateway$/ { print $2; exit }')"
+        fi
+        [[ "${gateway_name}" =~ ^[[:alnum:]_.-]+$ ]] \
+            || die "could not determine a safe active OpenShell gateway name"
+        [[ "${workspace_name}" =~ ^[[:alnum:]_.-]+$ ]] \
+            || die "invalid OpenShell workspace name '${workspace_name}'"
+        [[ "${SANDBOX_NAME}" =~ ^[[:alnum:]_.-]+$ ]] \
+            || die "invalid sandbox name '${SANDBOX_NAME}'"
+
+        openshell_executable="$(command -v openshell)"
+        [[ "${openshell_executable}" =~ ^/[[:alnum:]_./-]+$ ]] \
+            || die "OpenShell executable path cannot be used safely by ssh"
+        proxy_command="${openshell_executable} ssh-proxy --gateway-name ${gateway_name} --name ${SANDBOX_NAME} --workspace ${workspace_name}"
+
+        ssh -f -N -M -S "${FORWARD_CONTROL_SOCKET}" \
+            -o "ProxyCommand=${proxy_command}" \
+            -o ExitOnForwardFailure=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o GlobalKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
+            -L 127.0.0.1:18789:127.0.0.1:18789 \
+            -L "127.0.0.1:${WIDGET_PORT}:127.0.0.1:${WIDGET_PORT}" \
+            sandbox \
+            >"${FORWARD_LOG_FILE}" 2>&1 </dev/null
+    fi
+
+    attempt=1
+    until curl -fsS http://127.0.0.1:18789/healthz >/dev/null 2>&1; do
+        if (( attempt >= max_attempts )); then
+            tail -n 20 "${FORWARD_LOG_FILE}" >&2 || true
+            die "Control UI forward did not become healthy after ${max_attempts} checks."
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
+    done
 }
 
 quickstart() {
     heading "OpenClaw CSB Quickstart"
     create
     upload_skills
+    install_image_skills
     start_gateway
+    resolve_widget_port_from_sandbox
+    ensure_forward
     success "OpenClaw is ready at http://localhost:18789"
+    printf '  Native widgets use the loopback sandbox forward at http://127.0.0.1:%s.\n' \
+        "${WIDGET_PORT}"
     printf '  If this is your first time accessing this sandbox, run %s%s token-copy%s before opening the UI.\n' \
         "${COLOR_BOLD}" "$0" "${COLOR_RESET}"
 }
@@ -338,6 +573,37 @@ copy_token() {
     success "Copied the Control UI token to the clipboard."
 }
 
+gateway_command() {
+    local action="${1:-}"
+
+    [[ $# -eq 1 ]] || die "usage: './scripts/openclaw-csb gateway start|stop|restart|status'"
+    openshell sandbox get "${SANDBOX_NAME}" >/dev/null 2>&1 \
+        || die "sandbox '${SANDBOX_NAME}' does not exist"
+
+    case "${action}" in
+        start)
+            start_gateway
+            ;;
+        stop)
+            stop_gateway
+            ;;
+        restart)
+            stop_gateway
+            start_gateway
+            ;;
+        status)
+            if gateway_is_healthy; then
+                success "OpenClaw gateway is healthy at http://localhost:18789"
+            else
+                die "OpenClaw gateway is not healthy"
+            fi
+            ;;
+        *)
+            die "usage: './scripts/openclaw-csb gateway start|stop|restart|status'"
+            ;;
+    esac
+}
+
 trap 'unset gateway_token' EXIT
 
 parse_options() {
@@ -346,6 +612,21 @@ parse_options() {
             --skills-dir)
                 [[ -n "${2:-}" ]] || die "--skills-dir requires a directory"
                 SKILLS_DIR="$2"
+                shift 2
+                ;;
+            --with)
+                local option_name="${2:-}"
+                local option_script
+                local -a option_args=()
+                [[ "${option_name}" =~ ^[[:alnum:]][[:alnum:]._-]*$ ]] \
+                    || die "invalid provider option '${option_name}'"
+                option_script="${SCRIPT_DIR}/options/${option_name}"
+                [[ -x "${option_script}" ]] \
+                    || die "unknown provider option '${option_name}'"
+                while IFS= read -r option_arg; do
+                    [[ -n "${option_arg}" ]] && option_args+=("${option_arg}")
+                done < <("${option_script}" quickstart-args)
+                parse_options "${option_args[@]}"
                 shift 2
                 ;;
             --allow-skill)
@@ -362,6 +643,42 @@ parse_options() {
                 allowed_plugins+=("$2")
                 shift 2
                 ;;
+            --image-skill)
+                [[ -n "${2:-}" ]] || die "--image-skill requires a skill name"
+                [[ "$2" =~ ^[[:alnum:]][[:alnum:]._-]*$ ]] \
+                    || die "invalid image skill name '$2'"
+                image_skills+=("$2")
+                shift 2
+                ;;
+            --provider)
+                [[ -n "${2:-}" ]] || die "--provider requires a provider name"
+                [[ "$2" =~ ^[[:alnum:]][[:alnum:]._-]*$ ]] \
+                    || die "invalid provider name '$2'"
+                providers[provider_count]="$2"
+                provider_count=$((provider_count + 1))
+                shift 2
+                ;;
+            --default-model)
+                [[ -n "${2:-}" ]] || die "--default-model requires a model reference"
+                DEFAULT_MODEL="$2"
+                shift 2
+                ;;
+            --inference-provider)
+                [[ "${2:-}" =~ ^[[:alnum:]][[:alnum:]._-]*$ ]] \
+                    || die "--inference-provider requires a provider name"
+                INFERENCE_PROVIDER="$2"
+                shift 2
+                ;;
+            --inference-model)
+                [[ -n "${2:-}" ]] || die "--inference-model requires a model ID"
+                INFERENCE_MODEL="$2"
+                shift 2
+                ;;
+            --model-providers)
+                [[ -n "${2:-}" ]] || die "--model-providers requires JSON"
+                MODEL_PROVIDERS="$2"
+                shift 2
+                ;;
             *)
                 die "unknown option '$1'"
                 ;;
@@ -375,11 +692,16 @@ shift || true
 case "${command}" in
     quickstart|create)
         parse_options "$@"
+        validate_widget_port
         require_secret_store
         require_clipboard
         require_command podman
         require_command openshell
         require_command openssl
+        [[ "${command}" != "quickstart" ]] || require_command ssh
+        ;;
+    gateway)
+        require_command openshell
         ;;
     token-copy)
         require_secret_store
@@ -393,6 +715,9 @@ case "${command}" in
         ;;
     create)
         create
+        ;;
+    gateway)
+        gateway_command "$@"
         ;;
     token-copy)
         copy_token

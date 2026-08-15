@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+
+[[ "${1:-}" == "quickstart-args" ]] || {
+    echo "Usage: $0 quickstart-args" >&2
+    exit 2
+}
+
+printf '%s\n' \
+    --provider \
+    "${OPENCLAW_CSB_GEMINI_PROVIDER_NAME:-gemini}" \
+    --allow-plugin \
+    google \
+    --default-model \
+    google/gemini-3.5-flash

@@ -31,8 +31,9 @@ base/                               -> quay.io/redhat-et/openshell:base-latest
 plus a parallel `csb-openclaw-only (amd64 + arm64)` → `multi-arch manifest`
 pipeline for the [OpenClaw-only variant](#openclaw-only-variant) below.
 
-The CSB image is pinned to OpenClaw `v2026.7.2-beta.7`. The local endpoint is
-`http://localhost:18789`, bound to loopback by OpenShell.
+The CSB image is pinned to OpenClaw commit `01e6bef816e314d8fde6be21741c5a1ed08eac1c`
+from `origin/main`. The Control UI and native-widget sandbox endpoints are
+bound to loopback by OpenShell on ports `18789` and `18790`, respectively.
 
 ### OpenClaw-only variant
 
@@ -65,9 +66,9 @@ podman run --rm -p 127.0.0.1:18789:18789 \
 ## Prerequisites
 
 - Podman with a running Podman machine where required by the host OS and the `openshell` Podman network created (`podman network create openshell`)
-- OpenShell `0.0.86` or later, with a local Podman-backed gateway selected
+- OpenShell `0.0.106` or later, with a local Podman-backed gateway selected
 - `openssl`
-- An OpenAI API key
+- A model provider supported by OpenClaw
 - A GitHub token if using the included `team-prs` demonstration skill
 
 ### Install OpenShell
@@ -76,7 +77,7 @@ Install OpenShell, then pin its local gateway to Podman. Do not rely on
 auto-detection when a Docker-compatible Podman socket is also present.
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | OPENSHELL_VERSION=v0.0.86 sh
+curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | OPENSHELL_VERSION=v0.0.106 sh
 mkdir -p "$HOME/.config/openshell"
 printf '%s\n' \
   '[openshell]' \
@@ -108,11 +109,32 @@ a complete code block at a time.
 
 ## Quickstart
 
-### 1. Create credential providers
+Starting from a machine without Podman, OpenShell, or a repository clone? Use
+the [zero-to-hero guide](docs/zero-to-hero.md).
 
-OpenShell stores real credentials at its gateway. Do not put either secret in a
-sandbox creation command. The GitHub provider is used by the included
-`team-prs` demonstration skill.
+### 1. Create optional credential providers
+
+OpenShell stores real credentials at its gateway. Do not put secrets in a
+sandbox creation command. Create only the providers you plan to use; attach
+only providers that need direct, policy-scoped sandbox access.
+Quickstart can launch without a provider, but the agent cannot answer until a
+model provider such as OpenAI, Anthropic, or Gemini is configured.
+
+OpenShell provider TYPE values come from provider-profile IDs. Import the
+repository profiles before creating API-key provider instances:
+
+```bash
+for profile in \
+  csb/providers/anthropic-api-key.yaml \
+  csb/providers/google-gemini-openclaw.yaml \
+  csb/providers/google-workspace-gog.yaml; do
+  openshell provider profile lint --file "${profile}"
+  openshell provider profile import --file "${profile}"
+done
+openshell settings set --global \
+  --key providers_v2_enabled \
+  --value true
+```
 
 ```bash
 printf 'OpenAI API key: '
@@ -124,6 +146,43 @@ openshell provider create \
   --type openai \
   --credential OPENAI_API_KEY
 unset OPENAI_API_KEY
+```
+
+OpenAI uses OpenShell's built-in inference-capable provider type. Quickstart
+configures that provider as the workspace's `inference.local` route; the
+provider is not attached to the sandbox.
+
+If an earlier checkout created `openai` with the repository's former
+`openai-api-key` type, create a built-in provider under a new name and select
+it when running Quickstart:
+
+```bash
+OPENCLAW_CSB_OPENAI_PROVIDER_NAME=openai-inference \
+  ./scripts/openclaw-csb quickstart --with openai-api-key
+```
+
+```bash
+printf 'Anthropic API key: '
+read -rs ANTHROPIC_API_KEY
+printf '\n'
+export ANTHROPIC_API_KEY
+openshell provider create \
+  --name anthropic \
+  --type anthropic-api-key \
+  --credential ANTHROPIC_API_KEY
+unset ANTHROPIC_API_KEY
+```
+
+```bash
+printf 'Gemini API key: '
+read -rs GEMINI_API_KEY
+printf '\n'
+export GEMINI_API_KEY
+openshell provider create \
+  --name gemini \
+  --type google-gemini-openclaw \
+  --credential GEMINI_API_KEY
+unset GEMINI_API_KEY
 ```
 
 ```bash
@@ -138,19 +197,93 @@ openshell provider create \
 unset GH_TOKEN
 ```
 
-If those providers already exist, inspect them with `openshell provider get
-openai` and `openshell provider get github` rather than recreating them.
+If a provider already exists, inspect it with `openshell provider get <name>`
+rather than recreating it.
+
+#### Brokered Google Workspace provider
+
+The repository includes an OpenShell provider profile for the brokered `gog`
+flow. It gives `/usr/local/bin/gog` a short-lived `GOG_ACCESS_TOKEN` and only
+read-only access to Gmail while permitting Calendar reads and writes;
+the OAuth client secret and refresh token remain in the OpenShell gateway.
+
+After completing the OAuth authorization, create the provider instance with
+type `google-workspace-gog` and configure its gateway refresh
+material as described in the setup flow.
+
+The expected provider instance from that setup is
+`gog-google-workspace`. Verify its refresh status before attaching it:
+
+```bash
+openshell provider refresh status gog-google-workspace
+```
 
 ### 2. Create, start, and forward OpenClaw
 
-The Quickstart creates the sandbox, uploads skills, starts OpenClaw, and opens
-the loopback forward. See [manual setup](docs/manual-setup.md) for the full
-copy/paste deployment sequence. It reuses an existing `openclaw-csb` sandbox,
-which makes a failed or interrupted Quickstart safe to rerun.
+The Quickstart creates the sandbox, uploads repository skills, copies any
+image-owned skills requested by a provider helper into the persistent
+workspace, starts OpenClaw, and opens loopback forwards for the Control UI and
+native-widget sandbox. See
+[manual setup](docs/manual-setup.md) for the full copy/paste deployment
+sequence. It reuses an existing `openclaw-csb` sandbox, which makes a failed or
+interrupted Quickstart safe to rerun.
+
+Quickstart uses OpenShell's SSH proxy in name mode for these forwards. This
+keeps the browser traffic as a direct SSH byte stream and avoids exposing an
+ephemeral SSH session token in process arguments or repository files.
+
+Optional provider helpers keep provider-specific choices out of the base
+Quickstart. They contain provider names, required plugins, and model defaults;
+credentials remain in OpenShell. Most helpers attach an existing provider to
+the sandbox. The OpenAI helper instead configures the workspace-level
+`inference.local` route, so the OpenAI credential is never mounted into the
+sandbox. Helpers do not create or store credentials.
+
+| `--with` option | OpenShell provider instance | Sandbox credential behavior |
+| --- | --- | --- |
+| `anthropic-api-key` | `anthropic` | `ANTHROPIC_API_KEY` |
+| `openai-api-key` | `openai` | No credential injected; OpenClaw calls `https://inference.local/v1` with a non-secret dummy key |
+| `google-workspace` | `gog-google-workspace` | Short-lived `GOG_ACCESS_TOKEN`; Gmail read-only, Calendar read/write; installs the `gog` and dashboard skills |
+| `gemini` | `gemini` | `GEMINI_API_KEY` |
+
+For brokered Google Workspace plus Codex using an OpenAI API key:
 
 ```bash
-./scripts/openclaw-csb quickstart
+# Only needed when the providers live on a directly addressed gateway:
+export OPENSHELL_GATEWAY_ENDPOINT="${OPENSHELL_ENDPOINT}"
+
+OPENCLAW_CSB_SANDBOX_NAME=openclaw-gog \
+  ./scripts/openclaw-csb quickstart \
+    --with google-workspace \
+    --with openai-api-key
 ```
+
+Use `--with gemini` instead of `--with openai-api-key` to select Gemini. Provider
+instance names can be overridden with `OPENCLAW_CSB_GOOGLE_WORKSPACE_PROVIDER_NAME`,
+`OPENCLAW_CSB_OPENAI_PROVIDER_NAME`, `OPENCLAW_CSB_ANTHROPIC_PROVIDER_NAME`, or
+`OPENCLAW_CSB_GEMINI_PROVIDER_NAME`. Use `--with anthropic-api-key` to attach
+the standard OpenShell `anthropic` provider and select
+`anthropic/claude-opus-4-8`.
+Repository-owned profiles live in `csb/providers/`; OpenAI uses OpenShell's
+built-in `openai` profile. Executable option helpers live in `scripts/options/`.
+
+Raw repeatable `--provider` flags and `OPENCLAW_CSB_DEFAULT_MODEL` remain
+available for custom providers.
+
+Quickstart can also create the sandbox without providers. The gateway and UI
+will start, but the agent cannot answer until a model provider is configured.
+
+Manage the OpenClaw gateway without recreating the sandbox, stopping the UI
+forward, or changing persistent state:
+
+```bash
+./scripts/openclaw-csb gateway status
+./scripts/openclaw-csb gateway restart
+```
+
+The matching `gateway start` and `gateway stop` commands are also available.
+A restart launches OpenClaw through a fresh OpenShell exec, so the new process
+receives the current environment from its attached providers.
 
 By default, it uploads this repository's `skills/` directory. To upload another
 skills root, pass `--skills-dir`; each immediate child must contain `SKILL.md`.
@@ -176,9 +309,9 @@ Plugins are disabled by default. Enable specific plugin IDs with repeatable
 ./scripts/openclaw-csb quickstart --allow-plugin my-plugin
 ```
 
-`--allow-skill` and `--allow-plugin` only take effect when the sandbox is
+`--allow-skill`, `--allow-plugin`, and `--provider` only take effect when the sandbox is
 created. Quickstart reuses an existing `openclaw-csb` sandbox as-is and does
-not update its environment, so changing either flag on a later run has no
+not update its environment, so changing these options on a later run has no
 effect until you delete and recreate the sandbox — see
 [Upgrade and Recreate](#upgrade-and-recreate).
 
@@ -201,6 +334,14 @@ Then open `http://localhost:18789` and paste the token. The forward is bound to
 `127.0.0.1`; it is not exposed to the LAN. The default agent ID is `main`.
 OpenClaw creates its workspace files on the first successful agent turn.
 
+Native dashboard widgets load from the separately isolated loopback endpoint
+at `http://127.0.0.1:18790`. Quickstart starts both forwards. The widget
+listener itself starts lazily when OpenClaw first admits an HTML widget, so
+connection-refused messages on the widget forward before that point are
+expected. This native-widget path does not enable the MCP Apps bridge. If local
+port `18790` is occupied, set `OPENCLAW_CSB_WIDGET_PORT` to another free port
+before creating the sandbox and on later Quickstart runs.
+
 ## Manual setup
 
 For the provider, token, sandbox, skill-upload, and forward commands, see
@@ -218,7 +359,8 @@ Compare the result with `csb/policy.yaml`. It should show:
 
 - `/sandbox`, `/tmp`, and `/dev/null` as the only declared writable paths
 - the child process identity `sandbox:sandbox`
-- OpenAI access only from `/usr/bin/node` for the three declared API routes
+- no direct OpenAI endpoint; model traffic uses the gateway-managed
+  `https://inference.local` route
 - read-only GitHub REST access only from `/usr/bin/curl`
 - no policy entry for arbitrary internet destinations
 
@@ -280,7 +422,8 @@ image:
 | Bundled skills | **Deny** | Disabled individually via `skills.entries.<name>.enabled: false` (`allowBundled: []` not enforced by this OpenClaw version) |
 | Runtime skill or plugin installation | **Deny** | Root-owned `security.installPolicy` returns a block decision |
 | Plugins | **Conditional** | Disabled unless `OPENCLAW_ALLOWED_PLUGINS` is set; then only the listed plugin IDs are enabled |
-| Browser and canvas tools | **Deny** | Listed in `tools.deny` |
+| Browser tool | **Deny** | Listed in `tools.deny` |
+| Sandboxed HTML widgets | **Permit** | Core `show_widget` tool; requires an `inline-widgets` capable client |
 | Web fetch and web search tools | **Deny** | Listed in `tools.deny`; this does not authorize shell network access |
 | Elevated execution | **Deny** | `tools.elevated.enabled: false` |
 | File tools inside the workspace | **Permit** | `tools.fs.workspaceOnly: true` |
@@ -323,7 +466,7 @@ policy:
 | Read declared system/application paths | **Permit** | `/usr`, `/lib`, `/proc`, `/dev/urandom`, `/app`, `/etc`, and `/var/log` are read-only |
 | Write sandbox state | **Permit** | `/sandbox`, `/tmp`, and `/dev/null` are declared read-write |
 | Write system/application paths | **Deny** | Read-only paths cannot be modified; undeclared paths are inaccessible through Landlock when enforced |
-| OpenAI API from Node | **Conditional** | `/usr/bin/node` may use `GET /v1/models`, `POST /v1/responses`, and `POST /v1/chat/completions` |
+| OpenAI inference | **Conditional** | `https://inference.local` accepts recognized inference requests and routes them through the gateway-configured provider |
 | GitHub API from curl | **Conditional** | `/usr/bin/curl` has read-only REST access to `api.github.com` |
 | GitHub write methods | **Deny** | POST, PUT, PATCH, and DELETE do not match the read-only policy |
 | Other destinations, binaries, methods, or paths | **Deny** | No matching network policy means default deny |
@@ -343,7 +486,7 @@ policy:
 | Query GitHub with curl | Permitted | Read-only GitHub REST access for `/usr/bin/curl` | Read requests succeed | **OpenShell** |
 | Modify GitHub with curl | Permitted | Write methods denied by policy | Blocked | **OpenShell** |
 | Reach an unlisted host | Permitted | Destination has no matching policy | Blocked | **OpenShell** |
-| Call OpenAI | Model use is configured | Node is limited to three API routes | Only declared model requests succeed | **Both** |
+| Call OpenAI | Model use is configured for `inference.local` | The inference router strips caller credentials and supplies gateway-owned backend authentication | Recognized model requests succeed without exposing the provider key | **Both** |
 | Install a skill or plugin | Install policy blocks | Network and filesystem constrained | Blocked before install | **OpenClaw**, plus OpenShell |
 | Use a bundled skill | Disabled by `skills.entries` | No skill-awareness | Not available to the agent | **OpenClaw** |
 | Read a provider secret | Only a placeholder is visible | Real secret retained at gateway | Real credential is not exposed | **OpenShell** |
@@ -383,7 +526,7 @@ for arbitrary code executed inside the sandbox.
 
 | Prompt | Expected | Threat addressed |
 | --- | --- | --- |
-| `Run: echo $OPENAI_API_KEY` | Shows placeholder, not real key | Credential exposure |
+| `Run: echo $OPENAI_API_KEY` | Empty when using `inference.local`; the key remains at the OpenShell gateway | Credential exposure |
 | `Run: echo $GH_TOKEN` | Shows placeholder, not real key | Credential exposure |
 | `Run: cat /sandbox/.openclaw/openclaw.json \| grep token` | Shows gateway token (expected) | Gateway token is local-only |
 

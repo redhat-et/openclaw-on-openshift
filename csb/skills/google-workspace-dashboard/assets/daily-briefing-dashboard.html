@@ -1,0 +1,83 @@
+<main aria-labelledby="briefing-title">
+  <header>
+    <p class="eyebrow">Stay ahead</p>
+    <h1 id="briefing-title">Daily Briefing</h1>
+    <p class="muted">Turn authorized Workspace context into a private, source-linked plan.</p>
+  </header>
+
+  <section class="actions" aria-label="Daily briefing actions">
+    <button class="card primary" type="button" data-action="today">
+      <span class="icon" aria-hidden="true">☀</span>
+      <span><strong>Prepare my day</strong><small>Meetings, priority mail, conflicts, and decisions</small></span>
+    </button>
+
+    <button class="card" type="button" data-action="next-meeting">
+      <span class="icon" aria-hidden="true">◎</span>
+      <span><strong>Prep my next meeting</strong><small>Agenda, attendees, context, and open questions</small></span>
+    </button>
+
+    <button class="card" type="button" data-action="week">
+      <span class="icon" aria-hidden="true">▦</span>
+      <span><strong>Look ahead this week</strong><small>Commitments, collisions, and preparation needs</small></span>
+    </button>
+
+    <button class="card" type="button" data-action="focus">
+      <span class="icon" aria-hidden="true">→</span>
+      <span><strong>Build a focus plan</strong><small>Prioritize work around the calendar you already have</small></span>
+    </button>
+  </section>
+
+  <p id="status" class="status muted" role="status" aria-live="polite">Ready when you are.</p>
+  <p class="privacy"><span aria-hidden="true">●</span> Private and read-only: this dashboard does not send mail or change your calendar or files.</p>
+</main>
+
+<style>
+  * { box-sizing: border-box; }
+  main { display: grid; gap: 18px; padding: 4px; color: var(--text); }
+  header { display: grid; gap: 5px; }
+  h1, p { margin: 0; }
+  h1 { color: var(--text-strong); font-size: 1.45rem; line-height: 1.2; }
+  .eyebrow { color: var(--accent); font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .muted { color: var(--muted); }
+  .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  button.card { display: flex; min-height: 94px; gap: 12px; align-items: center; margin: 0; padding: 16px; text-align: left; cursor: pointer; }
+  button.card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+  button.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.card:disabled { cursor: wait; opacity: .7; transform: none; }
+  button.card.primary { background: var(--accent-fill); color: var(--accent-fg); border-color: transparent; }
+  button.card.primary strong, button.card.primary small { color: inherit; }
+  button span:last-child { display: grid; gap: 4px; }
+  button strong { color: var(--text-strong); font-size: .98rem; }
+  button small { color: var(--muted); font-size: .78rem; line-height: 1.35; }
+  .icon { display: grid; flex: 0 0 34px; width: 34px; height: 34px; place-items: center; border: 1px solid currentColor; border-radius: 10px; font-size: 1rem; }
+  .status { min-height: 1.3em; font-size: .82rem; }
+  .privacy { color: var(--ok); font-size: .78rem; }
+  .privacy span { font-size: .6rem; vertical-align: 1px; }
+  @media (max-width: 560px) { .actions { grid-template-columns: 1fr; } }
+</style>
+
+<script>
+  const evidenceRule = " Use only authorized Gmail and Calendar sources. Keep Gmail read-only. Include source links and freshness where available, distinguish observations from recommendations, and say what could not be verified. If a read fails with round trip: EOF, retry it once; after a second failure report the exact observations and available OpenShell audit evidence without guessing the cause.";
+  const prompts = {
+    today: "Prepare a concise private briefing for today. Include my schedule and conflicts, five newest unread emails that may need attention, preparation needed for meetings, and decisions or deadlines. Do not send or change anything." + evidenceRule,
+    "next-meeting": "Prepare me for my next calendar meeting. Show the event details, attendee context available in authorized sources, related recent email, likely decisions, open questions, and a short agenda. Do not contact attendees or change anything." + evidenceRule,
+    week: "Prepare a look-ahead for the next seven days. Identify important meetings, conflicts, deadlines found in authorized context, preparation work, and decisions. Do not change my calendar, mail, or files." + evidenceRule,
+    focus: "Build a focus plan for the rest of today around my existing calendar. Ask me for my top outcome if it is unclear, then propose focused work blocks and a short priority list. This is a private plan only; do not change my calendar or external systems." + evidenceRule
+  };
+
+  const status = document.querySelector("#status");
+  document.querySelectorAll("button[data-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const prompt = prompts[button.dataset.action];
+      if (!prompt) return;
+      button.disabled = true;
+      status.textContent = "Briefing request sent to your Claw.";
+      if (window.openclaw?.prompt?.send) window.openclaw.prompt.send(prompt);
+      else sendPrompt(prompt);
+      window.setTimeout(() => {
+        button.disabled = false;
+        status.textContent = "Ready when you are.";
+      }, 1200);
+    });
+  });
+</script>

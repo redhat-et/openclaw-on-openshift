@@ -37,6 +37,8 @@ brew services restart nvidia/openshell/openshell
 sleep 3
 openshell status
 openshell provider get openai
+openshell inference set --provider openai --model gpt-5.6-sol
+openshell inference get
 openshell provider get github
 openshell sandbox list
 ```
@@ -72,14 +74,13 @@ openshell sandbox create \
   --cpu 2 \
   --memory 4Gi \
   --policy csb/policy.yaml \
-  --provider openai \
   --provider github \
   --driver-config-json '{"podman":{"mounts":[{"type":"volume","source":"openclaw-csb-data","target":"/sandbox/persist","read_only":false}]}}' \
   --env OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_GATEWAY_TOKEN" \
   --env OPENCLAW_STATE_DIR=/sandbox/persist/.openclaw \
   --env OPENCLAW_WORKSPACE_DIR=/sandbox/persist/workspace \
-  --env OPENCLAW_DEFAULT_MODEL=openai/gpt-5.5 \
-  --env 'OPENCLAW_PROVIDERS={"openai":{"api":"openai-responses","baseUrl":"https://api.openai.com/v1"}}' \
+  --env OPENCLAW_DEFAULT_MODEL=openai/gpt-5.6-sol \
+  --env 'OPENCLAW_PROVIDERS={"openai":{"api":"openai-responses","baseUrl":"https://inference.local/v1","apiKey":"unused","models":[{"id":"gpt-5.6-sol","name":"GPT-5.6 Sol"}]}}' \
   -- /bin/true
 ```
 
@@ -87,13 +88,13 @@ openshell sandbox create \
 
 ```bash
 openshell sandbox exec -n openclaw-csb -- \
-  mkdir -p /sandbox/persist/workspace/skills/team-prs
+  mkdir -p /sandbox/persist/workspace/skills
 ```
 
 ```bash
 openshell sandbox upload openclaw-csb \
-  skills/team-prs/SKILL.md \
-  /sandbox/persist/workspace/skills/team-prs/SKILL.md
+  skills/team-prs \
+  /sandbox/persist/workspace/skills
 ```
 
 ### Start OpenClaw and forward
@@ -109,7 +110,17 @@ until openshell sandbox exec -n openclaw-csb -- \
 ```
 
 ```bash
-openshell forward start 18789 openclaw-csb --background
+ssh -f -N -M -S /tmp/openclaw-csb-${UID}-openclaw-csb.sock \
+  -o "ProxyCommand=$(command -v openshell) ssh-proxy --gateway-name ${OPENSHELL_GATEWAY:-openshell} --name openclaw-csb --workspace ${OPENSHELL_WORKSPACE:-default}" \
+  -o ExitOnForwardFailure=yes \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  -o GlobalKnownHostsFile=/dev/null \
+  -o LogLevel=ERROR \
+  -o ServerAliveInterval=15 \
+  -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:18789:127.0.0.1:18789 \
+  sandbox >/tmp/openclaw-csb-forward.log 2>&1 </dev/null
 ```
 
 ### Copy token and open UI

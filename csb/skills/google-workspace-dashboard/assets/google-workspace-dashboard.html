@@ -1,0 +1,81 @@
+<main aria-labelledby="workspace-title">
+  <header>
+    <p class="eyebrow">Your workday</p>
+    <h1 id="workspace-title">Google Workspace</h1>
+    <p class="muted">Choose a task. Your Claw will show its work in the chat beside this dashboard.</p>
+  </header>
+
+  <section class="actions" aria-label="Google Workspace actions">
+    <button class="card primary" type="button" data-action="email">
+      <span class="icon" aria-hidden="true">✉</span>
+      <span><strong>Check my email</strong><small>Summarize five new unread messages</small></span>
+    </button>
+
+    <button class="card" type="button" data-action="calendar">
+      <span class="icon" aria-hidden="true">▣</span>
+      <span><strong>Check my calendar</strong><small>See today's agenda and conflicts</small></span>
+    </button>
+
+    <button class="card" type="button" data-action="meeting">
+      <span class="icon" aria-hidden="true">＋</span>
+      <span><strong>Create a meeting</strong><small>Plan it, review it, then confirm</small></span>
+    </button>
+
+  </section>
+
+  <p id="status" class="status muted" role="status" aria-live="polite">Ready when you are.</p>
+  <p class="privacy"><span aria-hidden="true">●</span> Email access is read-only. Meeting changes always require confirmation.</p>
+</main>
+
+<style>
+  * { box-sizing: border-box; }
+  main { display: grid; gap: 18px; padding: 4px; color: var(--text); }
+  header { display: grid; gap: 5px; }
+  h1, p { margin: 0; }
+  h1 { color: var(--text-strong); font-size: 1.45rem; line-height: 1.2; }
+  .eyebrow { color: var(--accent); font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .muted { color: var(--muted); }
+  .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  button.card { display: flex; min-height: 94px; gap: 12px; align-items: center; margin: 0; padding: 16px; text-align: left; cursor: pointer; }
+  button.card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+  button.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.card:disabled { cursor: wait; opacity: .7; transform: none; }
+  button.card.primary { background: var(--accent-fill); color: var(--accent-fg); border-color: transparent; }
+  button.card.primary strong, button.card.primary small { color: inherit; }
+  button span:last-child { display: grid; gap: 4px; }
+  button strong { color: var(--text-strong); font-size: .98rem; }
+  button small { color: var(--muted); font-size: .78rem; line-height: 1.35; }
+  .icon { display: grid; flex: 0 0 34px; width: 34px; height: 34px; place-items: center; border: 1px solid currentColor; border-radius: 10px; font-size: 1.1rem; }
+  .status { min-height: 1.3em; font-size: .82rem; }
+  .privacy { color: var(--ok); font-size: .78rem; }
+  .privacy span { font-size: .6rem; vertical-align: 1px; }
+  @media (max-width: 560px) { .actions { grid-template-columns: 1fr; } }
+</style>
+
+<script>
+  const readRetry = " If the read fails with round trip: EOF, retry the same command once. If it fails again, report the exact observations and any available OpenShell audit evidence; if that evidence is unavailable or inconclusive, say the cause is unknown rather than inferring one.";
+  const prompts = {
+    email: "Using Google Workspace, summarize my five newest unread emails. Gmail is read-only: do not modify, label, archive, delete, draft, reply to, or send anything. Pass --readonly to gog." + readRetry,
+    calendar: "Show today's calendar, upcoming meetings, and any conflicts. Do not change anything." + readRetry,
+    meeting: "Help me create a calendar meeting. Ask for any missing title, attendees, date, start time, timezone, duration, and conferencing choice. Show the complete event summary and require my explicit confirmation immediately before creating it."
+  };
+
+  const status = document.querySelector("#status");
+  document.querySelectorAll("button[data-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const prompt = prompts[button.dataset.action];
+      if (!prompt) return;
+      button.disabled = true;
+      status.textContent = "Request sent to your Claw.";
+      if (window.openclaw?.prompt?.send) {
+        window.openclaw.prompt.send(prompt);
+      } else {
+        sendPrompt(prompt);
+      }
+      window.setTimeout(() => {
+        button.disabled = false;
+        status.textContent = "Ready when you are.";
+      }, 1200);
+    });
+  });
+</script>

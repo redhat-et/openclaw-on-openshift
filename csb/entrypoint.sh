@@ -65,6 +65,9 @@ export OPENCLAW_CONFIG_DIR="${CONFIG_DIR}"
 export OPENCLAW_STATE_DIR="${CONFIG_DIR}"
 export OPENCLAW_CONFIG_PATH="${CONFIG_DIR}/openclaw.json"
 export OPENCLAW_WORKSPACE_DIR="${WORKSPACE_DIR}"
+# SQLite probes /var/tmp before /tmp when TMPDIR is unset. OpenShell only grants
+# this sandbox write access to /tmp, so direct SQLite temporary files there.
+export TMPDIR=/tmp
 
 mkdir -p "${CONFIG_DIR}" "${WORKSPACE_DIR}"
 chmod 700 "${CONFIG_DIR}" "${WORKSPACE_DIR}"

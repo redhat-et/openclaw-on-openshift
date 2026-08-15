@@ -52,17 +52,18 @@ RUN dnf install -y \
 
 RUN npm install -g pnpm@11.2.2
 
-# TESTING ONLY: pinned to a v2026.7.2 beta because it's the first tag with
-# scripts/lib/docker-plugin-selection.mjs (needed to select the openshell
-# extension below). No stable tag has this yet. Switch back to a stable
-# OPENCLAW_REF once 2026.7.2 ships.
-ARG OPENCLAW_REF=v2026.7.2-beta.7
-ARG OPENCLAW_COMMIT=dabe1915362e20c25704af91612a32a8f4c96e83
-RUN git clone --depth 1 --branch "${OPENCLAW_REF}" https://github.com/openclaw/openclaw.git . && \
+# OPENCLAW_REF supplies CI image-tag metadata and supports branch/tag overrides.
+# OPENCLAW_COMMIT is the source and integrity boundary for reproducible builds.
+ARG OPENCLAW_REF=main
+ARG OPENCLAW_COMMIT=01e6bef816e314d8fde6be21741c5a1ed08eac1c
+RUN git init . && \
+    git remote add origin https://github.com/openclaw/openclaw.git && \
+    git fetch --depth 1 origin "${OPENCLAW_COMMIT}" && \
+    git checkout --detach FETCH_HEAD && \
     test "$(git rev-parse HEAD)" = "${OPENCLAW_COMMIT}"
 
 # Extension selection — falls back to pnpm build on older release tags.
-ARG OPENCLAW_EXTENSIONS=""
+ARG OPENCLAW_EXTENSIONS="anthropic,openai,codex,google"
 RUN if [ -f scripts/lib/docker-plugin-selection.mjs ]; then \
       node scripts/lib/docker-plugin-selection.mjs extensions "${OPENCLAW_EXTENSIONS}" \
         > /tmp/openclaw-selected-plugin-dirs; \
@@ -89,7 +90,17 @@ RUN set -eu; \
       NODE_OPTIONS="--max-old-space-size=8192" \
       pnpm build; \
     fi
-RUN pnpm_config_verify_deps_before_run=false pnpm ui:build || pnpm ui:build
+# Reuse the gateway's exact build identity while skipping only OpenClaw's
+# contributor performance budget, whose gzip result varies by build platform.
+# A direct Vite build without these values produces a different identity and
+# forces clients to reload after reconnecting.
+RUN set -eu; \
+    build_timestamp="$(node -p "require('./dist/build-info.json').builtAt")"; \
+    build_id="$(node -p "require('./dist/build-info.json').buildId")"; \
+    OPENCLAW_BUILD_TIMESTAMP="${build_timestamp}" \
+    OPENCLAW_CONTROL_UI_BUILD_ID="${build_id}" \
+    pnpm_config_verify_deps_before_run=false pnpm --dir ui build; \
+    node --import tsx scripts/check-control-ui-precompressed-assets.mts
 
 # Reconcile node_modules to production dependencies from the committed lockfile.
 # Offline mode prevents this reduction step from introducing network drift.
@@ -258,6 +269,7 @@ RUN chmod 0755 /usr/local/bin/openclaw-install-policy /usr/local/bin/openclaw
 RUN mkdir -p /app && chmod 0755 /app
 
 COPY --from=builder --chown=0:0 /build /app
+COPY --chown=0:0 csb/skills /app/skills
 
 COPY --chown=0:0 csb/configure-openclaw.mjs /app/configure-openclaw.mjs
 COPY --chown=0:0 csb/entrypoint.sh /app/entrypoint.sh
@@ -271,7 +283,7 @@ ENV OPENCLAW_WORKSPACE_DIR=/sandbox/workspace \
 
 WORKDIR /app
 
-EXPOSE 18789
+EXPOSE 18789 18790
 
 USER 1001
 

@@ -1,0 +1,55 @@
+#!/bin/bash
+set -euo pipefail
+
+usage() {
+    echo "Usage: $0 <google-account> <oauth-client-json>" >&2
+    exit 2
+}
+
+[[ $# -eq 2 ]] || usage
+
+GOG_BIN="${GOG_BIN:-$(command -v gog || true)}"
+GOG_HOME_DIR="${GOG_HOME_DIR:-/tmp/openshell-gog-e2e}"
+GOG_ACCOUNT="$1"
+GOG_OAUTH_JSON="$2"
+OPENSHELL_WORKSPACE="${OPENSHELL_WORKSPACE:-openclaw-test}"
+PROVIDER_NAME="${OPENCLAW_CSB_GOOGLE_WORKSPACE_PROVIDER_NAME:-gog-google-workspace}"
+
+command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+command -v openshell >/dev/null || { echo "openshell is required" >&2; exit 1; }
+[[ -x "${GOG_BIN}" ]] || { echo "gog not found at ${GOG_BIN}" >&2; exit 1; }
+[[ -f "${GOG_OAUTH_JSON}" ]] || { echo "OAuth JSON not found at ${GOG_OAUTH_JSON}" >&2; exit 1; }
+
+token_file="$(mktemp "${TMPDIR:-/tmp}/gog-refresh-token.XXXXXX.json")"
+cleanup() {
+    rm -f "${token_file}"
+    unset GOG_CLIENT_SECRET GOG_REFRESH_TOKEN
+}
+trap cleanup EXIT
+
+"${GOG_BIN}" --home "${GOG_HOME_DIR}" auth tokens export "${GOG_ACCOUNT}" \
+    --out "${token_file}" --overwrite
+
+client_id="$(jq -er '.installed.client_id // .web.client_id' "${GOG_OAUTH_JSON}")"
+export GOG_CLIENT_SECRET
+GOG_CLIENT_SECRET="$(jq -er '.installed.client_secret // .web.client_secret' "${GOG_OAUTH_JSON}")"
+export GOG_REFRESH_TOKEN
+GOG_REFRESH_TOKEN="$(jq -er '.refresh_token' "${token_file}")"
+
+openshell provider refresh configure \
+    --workspace "${OPENSHELL_WORKSPACE}" \
+    --credential-key GOG_ACCESS_TOKEN \
+    --strategy oauth2-refresh-token \
+    --material "client_id=${client_id}" \
+    --secret-material-env client_secret=GOG_CLIENT_SECRET \
+    --secret-material-env refresh_token=GOG_REFRESH_TOKEN \
+    "${PROVIDER_NAME}"
+
+openshell provider refresh rotate \
+    --workspace "${OPENSHELL_WORKSPACE}" \
+    --credential-key GOG_ACCESS_TOKEN \
+    "${PROVIDER_NAME}"
+
+openshell provider refresh status \
+    --workspace "${OPENSHELL_WORKSPACE}" \
+    "${PROVIDER_NAME}"

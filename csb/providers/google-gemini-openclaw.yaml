@@ -1,0 +1,38 @@
+id: google-gemini-openclaw
+display_name: Google Gemini for OpenClaw
+description: Gemini content generation for the OpenClaw Node runtime
+category: inference
+inference_capable: false
+
+credentials:
+  - name: api_key
+    description: Google AI Studio Gemini API key
+    env_vars: [GEMINI_API_KEY]
+    required: true
+    auth_style: header
+    header_name: x-goog-api-key
+
+discovery:
+  credentials: [api_key]
+
+endpoints:
+  - host: generativelanguage.googleapis.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    rules:
+      - allow:
+          method: GET
+          path: /v1beta/models
+      - allow:
+          method: GET
+          path: /v1beta/models/*
+      - allow:
+          method: POST
+          path: /v1beta/models/*:generateContent
+      - allow:
+          method: POST
+          path: /v1beta/models/*:streamGenerateContent
+
+binaries:
+  - /usr/bin/node

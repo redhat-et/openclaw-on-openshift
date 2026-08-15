@@ -44,6 +44,20 @@ check() {
     fi
 }
 
+check_absent() {
+    local label="$1"
+    local result="$2"
+    local unexpected="$3"
+
+    if echo "$result" | tr ',' '\n' | grep -qix "$unexpected"; then
+        echo "FAIL  $label (got: $result)"
+        ((FAIL++))
+    else
+        echo "PASS  $label"
+        ((PASS++))
+    fi
+}
+
 warn() {
     local label="$1"
     local detail="$2"
@@ -117,7 +131,7 @@ check "Exec mode is full" "$RESULT" "full"
 echo "--- Denied tools ---"
 RESULT=$(podman exec "$CONTAINER" node -e "const c=JSON.parse(require('fs').readFileSync('${CONFIG_PATH}'));console.log(c.tools?.deny?.join(','))")
 check "browser denied" "$RESULT" "browser"
-check "canvas denied" "$RESULT" "canvas"
+check_absent "canvas policy family available for show_widget" "$RESULT" "canvas"
 check "web_fetch denied" "$RESULT" "web_fetch"
 check "web_search denied" "$RESULT" "web_search"
 

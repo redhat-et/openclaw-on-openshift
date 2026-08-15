@@ -33,6 +33,18 @@ function parseJson(value, name) {
   }
 }
 
+function parsePort(value, name, fallback) {
+  const raw = value === undefined || value === "" ? String(fallback) : value;
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`${name} must be a numeric TCP port`);
+  }
+  const port = Number(raw);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${name} must be between 1 and 65535`);
+  }
+  return port;
+}
+
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -114,9 +126,10 @@ function loadProviders() {
     if (provider.models !== undefined && (
       !Array.isArray(provider.models)
       || !provider.models.every((model) => isPlainObject(model)
-        && typeof model.id === "string" && model.id.trim().length > 0)
+        && typeof model.id === "string" && model.id.trim().length > 0
+        && typeof model.name === "string" && model.name.trim().length > 0)
     )) {
-      throw new Error(`Provider '${name}' models must be an array of objects with non-empty ids`);
+      throw new Error(`Provider '${name}' models must be an array of objects with non-empty ids and names`);
     }
 
     cleanProviders[name] = { api, baseUrl };
@@ -196,6 +209,10 @@ if (typeof process.env.OPENCLAW_GATEWAY_TOKEN !== "string"
   throw new Error("OPENCLAW_GATEWAY_TOKEN is required on every startup");
 }
 const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+const widgetPort = parsePort(process.env.OPENCLAW_WIDGET_PORT, "OPENCLAW_WIDGET_PORT", 18790);
+if (widgetPort === 18789) {
+  throw new Error("OPENCLAW_WIDGET_PORT must differ from the Control UI port 18789");
+}
 const allowedSkillsRaw = process.env.OPENCLAW_ALLOWED_SKILLS || "";
 const allowedSkills = allowedSkillsRaw
   ? parseJson(allowedSkillsRaw, "OPENCLAW_ALLOWED_SKILLS")
@@ -237,6 +254,14 @@ gatewayAuth.rateLimit = {
 };
 const controlUi = ensurePlainObject(gateway, "controlUi", "gateway.controlUi");
 controlUi.allowedOrigins = allowedOrigins;
+
+// Native dashboard widgets share OpenClaw's isolated sandbox listener with
+// MCP Apps, but do not require the MCP Apps bridge itself.
+const mcp = ensurePlainObject(cfg, "mcp", "mcp");
+const mcpApps = ensurePlainObject(mcp, "apps", "mcp.apps");
+mcpApps.enabled = false;
+mcpApps.sandboxPort = widgetPort;
+delete mcpApps.sandboxOrigin;
 
 const models = ensurePlainObject(cfg, "models", "models");
 models.providers = loadProviders();
@@ -320,7 +345,7 @@ security.installPolicy = {
 };
 
 const tools = ensurePlainObject(cfg, "tools", "tools");
-tools.deny = ["browser", "canvas", "web_fetch", "web_search"];
+tools.deny = ["browser", "web_fetch", "web_search"];
 const execTools = ensurePlainObject(tools, "exec", "tools.exec");
 execTools.mode = "full";
 const elevatedTools = ensurePlainObject(tools, "elevated", "tools.elevated");

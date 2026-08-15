@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+
+[[ "${1:-}" == "quickstart-args" ]] || {
+    echo "Usage: $0 quickstart-args" >&2
+    exit 2
+}
+
+printf '%s\n' \
+    --provider \
+    "${OPENCLAW_CSB_GOOGLE_WORKSPACE_PROVIDER_NAME:-gog-google-workspace}" \
+    --image-skill \
+    gog \
+    --image-skill \
+    google-workspace-dashboard

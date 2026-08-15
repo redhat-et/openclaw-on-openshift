@@ -13,31 +13,14 @@ filesystem_policy:
     - /sandbox
     - /tmp
     - /dev/null
+    # Required by forkpty/openpty for OpenClaw's interactive terminal sessions.
+    - /dev/pts
 landlock:
   compatibility: best_effort
 process:
   run_as_user: sandbox
   run_as_group: sandbox
 network_policies:
-  openai_api:
-    name: openai-api
-    endpoints:
-      - host: api.openai.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        rules:
-          - allow:
-              method: GET
-              path: /v1/models
-          - allow:
-              method: POST
-              path: /v1/responses
-          - allow:
-              method: POST
-              path: /v1/chat/completions
-    binaries:
-      - path: /usr/bin/node
   github_api:
     name: github-api-readonly
     endpoints:

@@ -1,0 +1,50 @@
+id: google-workspace-gog
+display_name: Google Workspace via gog
+description: Gateway-refreshed Gmail read-only and Calendar read/write access for gog and OpenClaw
+category: data
+inference_capable: false
+
+credentials:
+  - name: access_token
+    description: Short-lived Google Workspace OAuth access token
+    env_vars: [GOG_ACCESS_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+    refresh:
+      strategy: oauth2_refresh_token
+      token_url: https://oauth2.googleapis.com/token
+      scopes: []
+      refresh_before_seconds: 300
+      max_lifetime_seconds: 3600
+      material:
+        - name: client_id
+          description: OAuth Desktop client ID
+          required: true
+        - name: client_secret
+          description: OAuth Desktop client secret
+          required: true
+          secret: true
+        - name: refresh_token
+          description: OAuth refresh token with Gmail read-only and Calendar read/write scopes
+          required: true
+          secret: true
+
+discovery:
+  credentials: [access_token]
+
+endpoints:
+  - host: gmail.googleapis.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-only
+  - host: www.googleapis.com
+    port: 443
+    path: /calendar/v3/**
+    protocol: rest
+    enforcement: enforce
+    access: read-write
+
+binaries:
+  - /usr/local/bin/gog

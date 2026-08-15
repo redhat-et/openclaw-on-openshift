@@ -1,0 +1,26 @@
+id: anthropic-api-key
+display_name: Anthropic API key for OpenClaw
+description: Anthropic API access for the OpenClaw Node runtime
+category: inference
+inference_capable: false
+
+credentials:
+  - name: api_key
+    description: Anthropic API key
+    env_vars: [ANTHROPIC_API_KEY]
+    required: true
+    auth_style: header
+    header_name: x-api-key
+
+discovery:
+  credentials: [api_key]
+
+endpoints:
+  - host: api.anthropic.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-write
+
+binaries:
+  - /usr/bin/node
