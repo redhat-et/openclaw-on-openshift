@@ -11,6 +11,7 @@
 # Build context: repo root (.)
 # Build commands:
 #   podman build -f csb/Containerfile.hi --target runtime-openshell \
+#     --build-arg OPENCLAW_EXTENSIONS=openshell \
 #     -t ...:csb-hi-latest .
 #   podman build -f csb/Containerfile.hi --target runtime-openclaw-only \
 #     -t ...:csb-hi-openclaw-only-latest .
@@ -214,6 +215,24 @@ RUN dnf install -y --nodocs --setopt=install_weak_deps=0 \
     dnf clean all && \
     rm -rf /var/cache/dnf
 
+# /usr/bin/node ships as a symlink to node-24 in this image. OpenShell's
+# per-binary network policy (csb/policy.yaml: binaries: path: /usr/bin/node)
+# identifies the calling binary via /proc/<pid>/exe, which the kernel
+# resolves to the real underlying file -- replace the symlink with the real
+# binary so the policy path matches unambiguously, same guarantee
+# csb/Containerfile gets from copying a real Node binary to /usr/bin/node.
+RUN rm -f /usr/bin/node && cp -a /usr/bin/node-24 /usr/bin/node
+
+# The Hardened Image bundles the full npm CLI and its vendored dependencies
+# (including, at the time of writing, an outdated `tar` with a known CVE --
+# see CVE-2026-59873). csb/Containerfile's OpenShell CLI plugin invokes
+# `node` and `openshell` directly, never `npm`, so remove it via the
+# package manager rather than carry that extra attack surface (same
+# rationale as the runtime-openclaw-only target below).
+RUN NPM_PKG="$(rpm -qf "$(command -v npm)")" && \
+    dnf remove -y "${NPM_PKG}" && \
+    dnf clean all
+
 # openshell CLI, required at runtime by the openshell-sandbox plugin (see
 # extensions/openshell's own docs: "openshell CLI on PATH"). Installed from
 # the static musl release tarball -- zero dynamic dependencies (verified:
@@ -325,7 +344,7 @@ USER root
 # gog CLI — same install pattern as the openshell-enabled target above.
 # This base has no system `tar`/`gzip`, so install them via dnf first.
 ARG GOGCLI_VERSION=0.37.0
-RUN dnf install -y tar gzip && dnf clean all
+RUN dnf install -y tar gzip && dnf clean all && rm -rf /var/cache/dnf
 RUN set -eux; \
     arch="$(uname -m)"; \
     case "$arch" in \
