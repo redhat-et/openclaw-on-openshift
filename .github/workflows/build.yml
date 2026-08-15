@@ -645,6 +645,7 @@ jobs:
           OC_OPENCLAW_ONLY_VERSION: ${{ needs['build-openclaw-only'].outputs.oc_version }}
           GIT_REF: ${{ github.ref }}
           EVENT_NAME: ${{ github.event_name }}
+          REF_OVERRIDE: ${{ inputs.openclaw_ref }}
         run: |
           create_manifest() {
             local REPO="$1" TAG="$2"
@@ -675,14 +676,16 @@ jobs:
             "${CSB}:csb-amd64-git-${SHORT_SHA}" "${CSB}:csb-arm64-git-${SHORT_SHA}"
           docker manifest push "${CSB}:csb-git-${SHORT_SHA}"
 
-          if [[ "${GIT_REF}" == "refs/heads/main" ]] || \
-             [[ "${EVENT_NAME}" == "schedule" ]]; then
+          if [[ -z "${REF_OVERRIDE}" ]] && \
+             { [[ "${GIT_REF}" == "refs/heads/main" ]] || \
+               [[ "${EVENT_NAME}" == "schedule" ]]; }; then
             docker manifest create "${CSB}:csb-latest" \
               "${CSB}:csb-amd64-latest" "${CSB}:csb-arm64-latest"
             docker manifest push "${CSB}:csb-latest"
           fi
 
-          if [[ "${OC_VERSION}" != "unknown" && -n "${OC_VERSION}" ]]; then
+          if [[ -z "${REF_OVERRIDE}" ]] && \
+             [[ "${OC_VERSION}" != "unknown" && -n "${OC_VERSION}" ]]; then
             docker manifest create "${CSB}:csb-openclaw-${OC_VERSION}" \
               "${CSB}:csb-amd64-openclaw-${OC_VERSION}" "${CSB}:csb-arm64-openclaw-${OC_VERSION}"
             docker manifest push "${CSB}:csb-openclaw-${OC_VERSION}"
@@ -697,14 +700,16 @@ jobs:
             "${CSB}:csb-openclaw-only-amd64-git-${SHORT_SHA}" "${CSB}:csb-openclaw-only-arm64-git-${SHORT_SHA}"
           docker manifest push "${CSB}:csb-openclaw-only-git-${SHORT_SHA}"
 
-          if [[ "${GIT_REF}" == "refs/heads/main" ]] || \
-             [[ "${EVENT_NAME}" == "schedule" ]]; then
+          if [[ -z "${REF_OVERRIDE}" ]] && \
+             { [[ "${GIT_REF}" == "refs/heads/main" ]] || \
+               [[ "${EVENT_NAME}" == "schedule" ]]; }; then
             docker manifest create "${CSB}:csb-openclaw-only-latest" \
               "${CSB}:csb-openclaw-only-amd64-latest" "${CSB}:csb-openclaw-only-arm64-latest"
             docker manifest push "${CSB}:csb-openclaw-only-latest"
           fi
 
-          if [[ "${OC_OPENCLAW_ONLY_VERSION}" != "unknown" && -n "${OC_OPENCLAW_ONLY_VERSION}" ]]; then
+          if [[ -z "${REF_OVERRIDE}" ]] && \
+             [[ "${OC_OPENCLAW_ONLY_VERSION}" != "unknown" && -n "${OC_OPENCLAW_ONLY_VERSION}" ]]; then
             docker manifest create "${CSB}:csb-openclaw-only-openclaw-${OC_OPENCLAW_ONLY_VERSION}" \
               "${CSB}:csb-openclaw-only-amd64-openclaw-${OC_OPENCLAW_ONLY_VERSION}" "${CSB}:csb-openclaw-only-arm64-openclaw-${OC_OPENCLAW_ONLY_VERSION}"
             docker manifest push "${CSB}:csb-openclaw-only-openclaw-${OC_OPENCLAW_ONLY_VERSION}"
