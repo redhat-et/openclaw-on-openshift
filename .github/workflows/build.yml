@@ -41,7 +41,7 @@ on:
         type: boolean
         default: false
       openclaw_ref:
-        description: "OpenClaw git ref to build (branch / tag / SHA)"
+        description: "OpenClaw git ref to build (branch or tag; commit SHAs are not supported)"
         required: false
         default: ""
       openclaw_extensions:
@@ -153,6 +153,8 @@ jobs:
         env:
           DATE: ${{ needs.upstream.outputs.build_date }}
           SHA: ${{ needs.upstream.outputs.short_sha }}
+          GIT_REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           BASE="${{ env.BASE_IMAGE_REF }}"
           ARCH="${{ matrix.arch }}"
@@ -163,8 +165,8 @@ jobs:
             -t "${BASE}:base-${ARCH}-git-${SHA}" \
             base/context
 
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]] || \
-             [[ "${{ github.event_name }}" == "schedule" ]]; then
+          if [[ "${GIT_REF}" == "refs/heads/main" ]] || \
+             [[ "${EVENT_NAME}" == "schedule" ]]; then
             docker tag "${BASE}:base-${ARCH}-${DATE}" "${BASE}:base-${ARCH}-latest"
           fi
 
@@ -228,12 +230,16 @@ jobs:
 
       - name: Compute tags
         id: meta
+        env:
+          SHORT_SHA: ${{ needs.upstream.outputs.short_sha }}
+          DATE: ${{ needs.upstream.outputs.build_date }}
+          BASE: ${{ env.CSB_IMAGE_REF }}
+          ARCH: ${{ matrix.arch }}
+          REF_OVERRIDE: ${{ inputs.openclaw_ref }}
+          GIT_REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          SHORT_SHA="${{ needs.upstream.outputs.short_sha }}"
-          DATE="${{ needs.upstream.outputs.build_date }}"
-          BASE="${{ env.CSB_IMAGE_REF }}"
-          PREFIX="csb-${{ matrix.arch }}-"
-          REF_OVERRIDE="${{ inputs.openclaw_ref }}"
+          PREFIX="csb-${ARCH}-"
 
           if [[ -n "${REF_OVERRIDE}" ]]; then
             # Explicit override: resolve its commit so the Containerfile's
@@ -246,9 +252,11 @@ jobs:
               OC_COMMIT="$(echo "${MATCHES}" | grep '\^{}$' | awk '{print $1}' | head -1)"
               [[ -z "${OC_COMMIT}" ]] && OC_COMMIT="$(echo "${MATCHES}" | awk '{print $1}' | head -1)"
             else
-              # Not a resolvable tag/branch name on the remote -- assume
-              # it's already a commit SHA.
-              OC_COMMIT="${OC_VERSION}"
+              # Not a resolvable tag/branch name on the remote. Commit SHAs
+              # are not supported: csb/Containerfile clones via
+              # 'git clone --branch', which requires a branch or tag name.
+              echo "ERROR: openclaw_ref '${OC_VERSION}' does not resolve to a tag or branch on ${REPO_URL}. Commit SHAs are not supported for this input." >&2
+              exit 1
             fi
           else
             # No override: build exactly what csb/Containerfile pins by
@@ -262,8 +270,8 @@ jobs:
           TAGS="${BASE}:${PREFIX}${DATE} ${BASE}:${PREFIX}git-${SHORT_SHA}"
 
           if [[ -z "${REF_OVERRIDE}" ]] && \
-             { [[ "${{ github.ref }}" == "refs/heads/main" ]] || \
-               [[ "${{ github.event_name }}" == "schedule" ]]; }; then
+             { [[ "${GIT_REF}" == "refs/heads/main" ]] || \
+               [[ "${EVENT_NAME}" == "schedule" ]]; }; then
             TAGS="${TAGS} ${BASE}:${PREFIX}latest"
           fi
 
@@ -280,13 +288,15 @@ jobs:
           echo "primary_tag=${BASE}:${PREFIX}${DATE}" >> "${GITHUB_OUTPUT}"
 
       - name: Build CSB image
+        env:
+          EXTENSIONS: ${{ inputs.openclaw_extensions }}
+          GIT_SHA: ${{ github.sha }}
         run: |
           TAG_ARGS=""
           for TAG in ${{ steps.meta.outputs.tags }}; do
             TAG_ARGS="${TAG_ARGS} -t ${TAG}"
           done
 
-          EXTENSIONS="${{ inputs.openclaw_extensions }}"
           EXT_ARG=""
           if [ -n "${EXTENSIONS}" ]; then
             EXT_ARG="--build-arg OPENCLAW_EXTENSIONS=${EXTENSIONS}"
@@ -303,7 +313,7 @@ jobs:
             --build-arg CSB_BASE_IMAGE=${{ env.BASE_IMAGE_REF }}:base-${{ matrix.arch }}-latest \
             ${EXT_ARG} \
             --label org.opencontainers.image.title="OpenClaw CSB" \
-            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.revision="${GIT_SHA}" \
             --label org.opencontainers.image.version=${{ steps.meta.outputs.oc_version }} \
             --label org.opencontainers.image.created=${{ steps.meta.outputs.date }} \
             ${TAG_ARGS} \
@@ -444,12 +454,16 @@ jobs:
 
       - name: Compute tags
         id: meta
+        env:
+          SHORT_SHA: ${{ needs.upstream.outputs.short_sha }}
+          DATE: ${{ needs.upstream.outputs.build_date }}
+          BASE: ${{ env.CSB_IMAGE_REF }}
+          ARCH: ${{ matrix.arch }}
+          REF_OVERRIDE: ${{ inputs.openclaw_ref }}
+          GIT_REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          SHORT_SHA="${{ needs.upstream.outputs.short_sha }}"
-          DATE="${{ needs.upstream.outputs.build_date }}"
-          BASE="${{ env.CSB_IMAGE_REF }}"
-          PREFIX="csb-openclaw-only-${{ matrix.arch }}-"
-          REF_OVERRIDE="${{ inputs.openclaw_ref }}"
+          PREFIX="csb-openclaw-only-${ARCH}-"
 
           if [[ -n "${REF_OVERRIDE}" ]]; then
             # Explicit override: resolve its commit so the Containerfile's
@@ -462,9 +476,11 @@ jobs:
               OC_COMMIT="$(echo "${MATCHES}" | grep '\^{}$' | awk '{print $1}' | head -1)"
               [[ -z "${OC_COMMIT}" ]] && OC_COMMIT="$(echo "${MATCHES}" | awk '{print $1}' | head -1)"
             else
-              # Not a resolvable tag/branch name on the remote -- assume
-              # it's already a commit SHA.
-              OC_COMMIT="${OC_VERSION}"
+              # Not a resolvable tag/branch name on the remote. Commit SHAs
+              # are not supported: csb/Containerfile.openclaw clones via
+              # 'git clone --branch', which requires a branch or tag name.
+              echo "ERROR: openclaw_ref '${OC_VERSION}' does not resolve to a tag or branch on ${REPO_URL}. Commit SHAs are not supported for this input." >&2
+              exit 1
             fi
           else
             # No override: build exactly what csb/Containerfile.openclaw
@@ -478,8 +494,8 @@ jobs:
           TAGS="${BASE}:${PREFIX}${DATE} ${BASE}:${PREFIX}git-${SHORT_SHA}"
 
           if [[ -z "${REF_OVERRIDE}" ]] && \
-             { [[ "${{ github.ref }}" == "refs/heads/main" ]] || \
-               [[ "${{ github.event_name }}" == "schedule" ]]; }; then
+             { [[ "${GIT_REF}" == "refs/heads/main" ]] || \
+               [[ "${EVENT_NAME}" == "schedule" ]]; }; then
             TAGS="${TAGS} ${BASE}:${PREFIX}latest"
           fi
 
@@ -496,6 +512,8 @@ jobs:
           echo "primary_tag=${BASE}:${PREFIX}${DATE}" >> "${GITHUB_OUTPUT}"
 
       - name: Build OpenClaw-only image
+        env:
+          GIT_SHA: ${{ github.sha }}
         run: |
           TAG_ARGS=""
           for TAG in ${{ steps.meta.outputs.tags }}; do
@@ -511,7 +529,7 @@ jobs:
             -f csb/Containerfile.openclaw \
             ${REF_ARGS} \
             --label org.opencontainers.image.title="OpenClaw CSB (OpenClaw-only)" \
-            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.revision="${GIT_SHA}" \
             --label org.opencontainers.image.version=${{ steps.meta.outputs.oc_version }} \
             --label org.opencontainers.image.created=${{ steps.meta.outputs.date }} \
             ${TAG_ARGS} \
@@ -625,6 +643,8 @@ jobs:
           SHORT_SHA: ${{ needs.upstream.outputs.short_sha }}
           OC_VERSION: ${{ needs.build.outputs.oc_version }}
           OC_OPENCLAW_ONLY_VERSION: ${{ needs['build-openclaw-only'].outputs.oc_version }}
+          GIT_REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           create_manifest() {
             local REPO="$1" TAG="$2"
@@ -655,8 +675,8 @@ jobs:
             "${CSB}:csb-amd64-git-${SHORT_SHA}" "${CSB}:csb-arm64-git-${SHORT_SHA}"
           docker manifest push "${CSB}:csb-git-${SHORT_SHA}"
 
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]] || \
-             [[ "${{ github.event_name }}" == "schedule" ]]; then
+          if [[ "${GIT_REF}" == "refs/heads/main" ]] || \
+             [[ "${EVENT_NAME}" == "schedule" ]]; then
             docker manifest create "${CSB}:csb-latest" \
               "${CSB}:csb-amd64-latest" "${CSB}:csb-arm64-latest"
             docker manifest push "${CSB}:csb-latest"
@@ -677,8 +697,8 @@ jobs:
             "${CSB}:csb-openclaw-only-amd64-git-${SHORT_SHA}" "${CSB}:csb-openclaw-only-arm64-git-${SHORT_SHA}"
           docker manifest push "${CSB}:csb-openclaw-only-git-${SHORT_SHA}"
 
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]] || \
-             [[ "${{ github.event_name }}" == "schedule" ]]; then
+          if [[ "${GIT_REF}" == "refs/heads/main" ]] || \
+             [[ "${EVENT_NAME}" == "schedule" ]]; then
             docker manifest create "${CSB}:csb-openclaw-only-latest" \
               "${CSB}:csb-openclaw-only-amd64-latest" "${CSB}:csb-openclaw-only-arm64-latest"
             docker manifest push "${CSB}:csb-openclaw-only-latest"

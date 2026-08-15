@@ -49,9 +49,14 @@ section (network egress, filesystem Landlock, credential placeholders) do not
 apply here. Use it only where the OpenShell sandbox boundary is provided some
 other way, or for workloads that don't need it.
 
+The app's own `gateway.bind` setting is `"lan"` (it binds inside the
+container regardless of variant); with OpenShell that's made loopback-only
+by the `forward` command's explicit `127.0.0.1` binding. This variant has no
+`forward` step, so publish the port to loopback yourself:
+
 ```bash
 podman build -f csb/Containerfile.openclaw -t localhost/openclaw-openclaw-only .
-podman run --rm -p 18789:18789 \
+podman run --rm -p 127.0.0.1:18789:18789 \
   -e OPENAI_API_KEY \
   -e OPENCLAW_GATEWAY_TOKEN="$(openssl rand -hex 32)" \
   localhost/openclaw-openclaw-only
@@ -170,6 +175,12 @@ Plugins are disabled by default. Enable specific plugin IDs with repeatable
 ```bash
 ./scripts/openclaw-csb quickstart --allow-plugin my-plugin
 ```
+
+`--allow-skill` and `--allow-plugin` only take effect when the sandbox is
+created. Quickstart reuses an existing `openclaw-csb` sandbox as-is and does
+not update its environment, so changing either flag on a later run has no
+effect until you delete and recreate the sandbox — see
+[Upgrade and Recreate](#upgrade-and-recreate).
 
 To use a locally built image:
 

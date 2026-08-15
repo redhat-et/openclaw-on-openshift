@@ -266,8 +266,18 @@ plugins.enabled = allowedPlugins !== null && allowedPlugins.length > 0;
 plugins.allow = allowedPlugins || [];
 plugins.deny = [];
 const pluginEntries = ensurePlainObject(plugins, "entries", "plugins.entries");
-for (const name of allowedPlugins || []) {
-  pluginEntries[name] = { enabled: true };
+const allowedPluginSet = new Set(allowedPlugins || []);
+// pluginEntries persists across restarts (loaded from the existing config
+// file), so a plugin enabled by a prior, wider allowlist must be explicitly
+// disabled here -- otherwise narrowing OPENCLAW_ALLOWED_PLUGINS on restart
+// would silently leave it enabled.
+for (const name of Object.keys(pluginEntries)) {
+  if (!allowedPluginSet.has(name)) {
+    ensurePlainObject(pluginEntries, name, `plugins.entries.${name}`).enabled = false;
+  }
+}
+for (const name of allowedPluginSet) {
+  ensurePlainObject(pluginEntries, name, `plugins.entries.${name}`).enabled = true;
 }
 
 const skills = ensurePlainObject(cfg, "skills", "skills");

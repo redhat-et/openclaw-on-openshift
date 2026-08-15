@@ -71,12 +71,19 @@ echo "--- Config immutability (NIX_MODE) ---"
 RESULT=$(podman exec -e OPENCLAW_STATE_DIR="$STATE_DIR" -e OPENCLAW_NIX_MODE=1 "$CONTAINER" node /app/dist/index.js config set plugins.enabled true 2>&1)
 check "Config mutation blocked" "$RESULT" "immutable\|NixMode\|Nix\|readonly"
 
-# 2. Plugins — disabled unless the container was started with
-# OPENCLAW_ALLOWED_PLUGINS, in which case only the listed IDs may be enabled.
+# 2. Plugins — disabled unless the container was started with a non-empty
+# OPENCLAW_ALLOWED_PLUGINS array, in which case only the listed IDs may be
+# enabled. Mirrors configure-openclaw.mjs's own rule exactly (unset or "[]"
+# both mean disabled) so this check can't drift out of sync with it.
 echo "--- Plugins ---"
 ALLOWED_PLUGINS_ENV=$(podman exec "$CONTAINER" printenv OPENCLAW_ALLOWED_PLUGINS 2>/dev/null || echo "")
+HAS_ALLOWED_PLUGINS=$(podman exec -e ALLOWED_PLUGINS_ENV="$ALLOWED_PLUGINS_ENV" "$CONTAINER" node -e "
+const raw = process.env.ALLOWED_PLUGINS_ENV || '';
+const parsed = raw ? JSON.parse(raw) : null;
+console.log(parsed !== null && Array.isArray(parsed) && parsed.length > 0);
+")
 RESULT=$(podman exec "$CONTAINER" node -e "const c=JSON.parse(require('fs').readFileSync('${CONFIG_PATH}'));console.log(c.plugins?.enabled)")
-if [ -n "$ALLOWED_PLUGINS_ENV" ]; then
+if [ "$HAS_ALLOWED_PLUGINS" = "true" ]; then
     check "Plugins enabled (OPENCLAW_ALLOWED_PLUGINS set)" "$RESULT" "true"
     RESULT=$(podman exec -e ALLOWED_PLUGINS_ENV="$ALLOWED_PLUGINS_ENV" "$CONTAINER" node -e "
 const c = JSON.parse(require('fs').readFileSync('${CONFIG_PATH}'));
