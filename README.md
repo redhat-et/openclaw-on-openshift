@@ -27,10 +27,35 @@ base/                               -> quay.io/redhat-et/openshell:base-latest
             openclaw-install-policy    blocks runtime skill/plugin installation
 ```
 
-**CI pipeline:** `base (amd64 + arm64)` → `csb (amd64 + arm64)` → `multi-arch manifest`
+**CI pipeline:** `base (amd64 + arm64)` → `csb (amd64 + arm64)` → `multi-arch manifest`,
+plus a parallel `csb-openclaw-only (amd64 + arm64)` → `multi-arch manifest`
+pipeline for the [OpenClaw-only variant](#openclaw-only-variant) below.
 
 The CSB image is pinned to OpenClaw `v2026.7.2-beta.7`. The local endpoint is
 `http://localhost:18789`, bound to loopback by OpenShell.
+
+### OpenClaw-only variant
+
+`csb/Containerfile.openclaw` builds OpenClaw without OpenShell: no OpenShell
+CLI, no sandbox policy, and the `openshell` OpenClaw extension is not opted
+in. Both build and runtime stages share one Hardened Images base
+(`registry.access.redhat.com/hi/nodejs`), so no separate Node-runtime stage
+or binary swap is needed. Images are tagged
+`quay.io/redhat-et/openclaw:csb-openclaw-only-*`.
+
+This variant has **no OpenShell enforcement layer** — only the OpenClaw-level
+controls in [Policy Model](#policy-model) apply; the OpenShell rows in that
+section (network egress, filesystem Landlock, credential placeholders) do not
+apply here. Use it only where the OpenShell sandbox boundary is provided some
+other way, or for workloads that don't need it.
+
+```bash
+podman build -f csb/Containerfile.openclaw -t localhost/openclaw-openclaw-only .
+podman run --rm -p 18789:18789 \
+  -e OPENAI_API_KEY \
+  -e OPENCLAW_GATEWAY_TOKEN="$(openssl rand -hex 32)" \
+  localhost/openclaw-openclaw-only
+```
 
 ## Prerequisites
 
@@ -139,6 +164,13 @@ repeatable `--allow-skill` flags, using each skill's `name` from `SKILL.md`.
   --allow-skill my-skill
 ```
 
+Plugins are disabled by default. Enable specific plugin IDs with repeatable
+`--allow-plugin` flags:
+
+```bash
+./scripts/openclaw-csb quickstart --allow-plugin my-plugin
+```
+
 To use a locally built image:
 
 ```bash
@@ -236,7 +268,7 @@ image:
 | Cron / scheduled tasks | **Permit** | Enabled for unattended skill execution |
 | Bundled skills | **Deny** | Disabled individually via `skills.entries.<name>.enabled: false` (`allowBundled: []` not enforced by this OpenClaw version) |
 | Runtime skill or plugin installation | **Deny** | Root-owned `security.installPolicy` returns a block decision |
-| Plugins | **Deny** | Globally disabled with an empty allowlist |
+| Plugins | **Conditional** | Disabled unless `OPENCLAW_ALLOWED_PLUGINS` is set; then only the listed plugin IDs are enabled |
 | Browser and canvas tools | **Deny** | Listed in `tools.deny` |
 | Web fetch and web search tools | **Deny** | Listed in `tools.deny`; this does not authorize shell network access |
 | Elevated execution | **Deny** | `tools.elevated.enabled: false` |

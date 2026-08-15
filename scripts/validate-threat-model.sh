@@ -71,10 +71,25 @@ echo "--- Config immutability (NIX_MODE) ---"
 RESULT=$(podman exec -e OPENCLAW_STATE_DIR="$STATE_DIR" -e OPENCLAW_NIX_MODE=1 "$CONTAINER" node /app/dist/index.js config set plugins.enabled true 2>&1)
 check "Config mutation blocked" "$RESULT" "immutable\|NixMode\|Nix\|readonly"
 
-# 2. Plugins disabled
+# 2. Plugins — disabled unless the container was started with
+# OPENCLAW_ALLOWED_PLUGINS, in which case only the listed IDs may be enabled.
 echo "--- Plugins ---"
+ALLOWED_PLUGINS_ENV=$(podman exec "$CONTAINER" printenv OPENCLAW_ALLOWED_PLUGINS 2>/dev/null || echo "")
 RESULT=$(podman exec "$CONTAINER" node -e "const c=JSON.parse(require('fs').readFileSync('${CONFIG_PATH}'));console.log(c.plugins?.enabled)")
-check "Plugins disabled" "$RESULT" "false"
+if [ -n "$ALLOWED_PLUGINS_ENV" ]; then
+    check "Plugins enabled (OPENCLAW_ALLOWED_PLUGINS set)" "$RESULT" "true"
+    RESULT=$(podman exec -e ALLOWED_PLUGINS_ENV="$ALLOWED_PLUGINS_ENV" "$CONTAINER" node -e "
+const c = JSON.parse(require('fs').readFileSync('${CONFIG_PATH}'));
+const allowed = JSON.parse(process.env.ALLOWED_PLUGINS_ENV);
+const entries = c.plugins?.entries || {};
+const allEnabled = allowed.every((n) => entries[n]?.enabled === true);
+const noExtra = Object.keys(entries).every((n) => entries[n].enabled !== true || allowed.includes(n));
+console.log('allowedEnabled:' + allEnabled + ' noExtra:' + noExtra);
+")
+    check "Only allowlisted plugins enabled" "$RESULT" "allowedEnabled:true noExtra:true"
+else
+    check "Plugins disabled (no allowlist set)" "$RESULT" "false"
+fi
 
 # 3. Runtime install blocked
 echo "--- Runtime install ---"
@@ -119,7 +134,9 @@ if [ "$IS_OPENSHELL" = "true" ]; then
 else
     RESULT=$(podman exec "$CONTAINER" id)
     check "Non-root user (uid 1001)" "$RESULT" "uid=1001"
-    check "Sandbox group present" "$RESULT" "sandbox"
+    # csb/Containerfile's base creates a "sandbox" group; the OpenClaw-only
+    # variant (csb/Containerfile.openclaw) creates an "openclaw" group instead.
+    check "Runtime group present (sandbox or openclaw)" "$RESULT" "sandbox\|openclaw"
 fi
 
 # 10. Config permissions
