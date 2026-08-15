@@ -15,6 +15,7 @@ POLICY_PATH="${REPO_ROOT}/csb/policy.yaml"
 gateway_token=""
 SKILLS_DIR="${REPO_ROOT}/skills"
 declare -a allowed_skills=()
+declare -a allowed_plugins=()
 
 if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
     COLOR_RESET=$'\033[0m'
@@ -40,8 +41,10 @@ Commands:
   token-copy  Copy the stored Control UI token to the system clipboard.
 
 Options:
-  --skills-dir <dir>   Skill directory for quickstart (default: ./skills).
-  --allow-skill <name> Restrict visible workspace skills (repeatable).
+  --skills-dir <dir>    Skill directory for quickstart (default: ./skills).
+  --allow-skill <name>  Restrict visible workspace skills (repeatable).
+  --allow-plugin <name> Enable a plugin by ID (repeatable). Plugins are
+                        disabled by default; this is the only way to turn one on.
 EOF
 }
 
@@ -149,6 +152,18 @@ allowed_skills_json() {
     printf ']'
 }
 
+allowed_plugins_json() {
+    local plugin
+    local delimiter=""
+
+    printf '['
+    for plugin in "${allowed_plugins[@]}"; do
+        printf '%s"%s"' "${delimiter}" "${plugin}"
+        delimiter=","
+    done
+    printf ']'
+}
+
 read_volume_token() {
     podman run --rm \
         --entrypoint node \
@@ -245,6 +260,9 @@ create() {
     if (( ${#allowed_skills[@]} > 0 )); then
         create_args+=(--env "OPENCLAW_ALLOWED_SKILLS=$(allowed_skills_json)")
     fi
+    if (( ${#allowed_plugins[@]} > 0 )); then
+        create_args+=(--env "OPENCLAW_ALLOWED_PLUGINS=$(allowed_plugins_json)")
+    fi
     create_args+=(-- /bin/true)
 
     openshell "${create_args[@]}"
@@ -335,6 +353,13 @@ parse_options() {
                 [[ "$2" =~ ^[[:alnum:]][[:alnum:]._-]*$ ]] \
                     || die "invalid skill name '$2'"
                 allowed_skills+=("$2")
+                shift 2
+                ;;
+            --allow-plugin)
+                [[ -n "${2:-}" ]] || die "--allow-plugin requires a plugin ID"
+                [[ "$2" =~ ^[[:alnum:]][[:alnum:]._-]*$ ]] \
+                    || die "invalid plugin ID '$2'"
+                allowed_plugins+=("$2")
                 shift 2
                 ;;
             *)

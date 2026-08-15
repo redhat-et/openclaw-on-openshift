@@ -206,6 +206,16 @@ if (allowedSkills !== null && (!Array.isArray(allowedSkills) || !allowedSkills.e
   throw new Error("OPENCLAW_ALLOWED_SKILLS must be a JSON array of non-empty strings");
 }
 
+const allowedPluginsRaw = process.env.OPENCLAW_ALLOWED_PLUGINS || "";
+const allowedPlugins = allowedPluginsRaw
+  ? parseJson(allowedPluginsRaw, "OPENCLAW_ALLOWED_PLUGINS")
+  : null;
+if (allowedPlugins !== null && (!Array.isArray(allowedPlugins) || !allowedPlugins.every(
+  (name) => typeof name === "string" && name.trim().length > 0,
+))) {
+  throw new Error("OPENCLAW_ALLOWED_PLUGINS must be a JSON array of non-empty strings");
+}
+
 const allowedOrigins = ["http://localhost:18789", "http://127.0.0.1:18789"];
 if (process.env.OPENCLAW_PUBLIC_URL) {
   allowedOrigins.push(validateHttpUrl(process.env.OPENCLAW_PUBLIC_URL, "OPENCLAW_PUBLIC_URL", true));
@@ -245,10 +255,30 @@ if (defaultModel) {
   defaultModels[defaultModel] = defaultModels[defaultModel] || {};
 }
 
+// When OPENCLAW_ALLOWED_PLUGINS is set, enable exactly that list.
+// When unset, plugins stay disabled -- unchanged from prior CSB behavior.
+// plugins.allow gates installed/global plugins; stock bundled plugins (like
+// openshell) are gated per-id via plugins.entries, same as skills.entries
+// below -- confirmed empirically, `openclaw plugins list` still showed a
+// stock plugin as "disabled" with only plugins.allow set.
 const plugins = ensurePlainObject(cfg, "plugins", "plugins");
-plugins.enabled = false;
-plugins.allow = [];
+plugins.enabled = allowedPlugins !== null && allowedPlugins.length > 0;
+plugins.allow = allowedPlugins || [];
 plugins.deny = [];
+const pluginEntries = ensurePlainObject(plugins, "entries", "plugins.entries");
+const allowedPluginSet = new Set(allowedPlugins || []);
+// pluginEntries persists across restarts (loaded from the existing config
+// file), so a plugin enabled by a prior, wider allowlist must be explicitly
+// disabled here -- otherwise narrowing OPENCLAW_ALLOWED_PLUGINS on restart
+// would silently leave it enabled.
+for (const name of Object.keys(pluginEntries)) {
+  if (!allowedPluginSet.has(name)) {
+    ensurePlainObject(pluginEntries, name, `plugins.entries.${name}`).enabled = false;
+  }
+}
+for (const name of allowedPluginSet) {
+  ensurePlainObject(pluginEntries, name, `plugins.entries.${name}`).enabled = true;
+}
 
 const skills = ensurePlainObject(cfg, "skills", "skills");
 skills.allowBundled = [];
