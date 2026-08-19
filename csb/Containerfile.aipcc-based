@@ -1,0 +1,54 @@
+FROM quay.io/aipcc/base-images/agentic/openclaw:0.0.1-1787087976
+
+USER root
+
+RUN mkdir -p /sandbox/.openclaw/state /run/secrets && \
+    chown -R sandbox:sandbox /sandbox && \
+    chmod 700 /sandbox/.openclaw /sandbox/.openclaw/state && \
+    chmod 755 /run/secrets
+
+RUN   microdnf install -y iproute nftables util-linux && \
+      microdnf clean all
+
+# gog CLI (github.com/openclaw/gogcli) — Google Workspace (Gmail, Calendar,
+# Drive, Docs, Sheets, ...) from the terminal. Static Go binary, checksum
+# verified, same install pattern as the openshell CLI above. Release
+# tarballs use Go-style arch names, unlike OpenShell's uname -m names.
+ARG GOGCLI_VERSION=0.37.0
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    case "$arch" in \
+    x86_64) gogcli_arch=amd64 ;; \
+    aarch64) gogcli_arch=arm64 ;; \
+    *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    gogcli_base_url="https://github.com/openclaw/gogcli/releases/download/v${GOGCLI_VERSION}"; \
+    gogcli_tarball="gogcli_${GOGCLI_VERSION}_linux_${gogcli_arch}.tar.gz"; \
+    curl -fsSL -o "/tmp/${gogcli_tarball}" "${gogcli_base_url}/${gogcli_tarball}"; \
+    curl -fsSL -o /tmp/gogcli-checksums.txt "${gogcli_base_url}/checksums.txt"; \
+    (cd /tmp && grep -E " ${gogcli_tarball}\$" gogcli-checksums.txt | sha256sum -c -); \
+    tar -xzf "/tmp/${gogcli_tarball}" -C /usr/local/bin ./gog; \
+    chmod 0755 /usr/local/bin/gog; \
+    rm -f "/tmp/${gogcli_tarball}" /tmp/gogcli-checksums.txt; \
+    gog --version
+
+# m365 CLI — coworker's fork of @pnp/cli-microsoft365, pinned to a commit.
+# The fork now ships a "prepare": "npm run build" script (added upstream in
+# commit 6188d33), so npm builds dist/ itself during the git-dependency
+# install, same as it would for any git-sourced package with a build step.
+ARG M365_CLI_REPO=https://github.com/tssala23/cli-microsoft365.git
+ARG M365_CLI_COMMIT=6188d33644bde240a1433e7dc7667f5ac5ea549f
+RUN set -eux; \
+    npm install --prefix /opt/openclaw ${M365_CLI_REPO}#${M365_CLI_COMMIT}; \
+    npm cache clean --force --prefix /opt/openclaw; \
+    ln -s /opt/openclaw/node_modules/.bin/m365 /usr/local/bin/m365; \
+    m365 version
+
+ENV HOME=/sandbox \
+    OPENCLAW_HOME=/sandbox \
+    SQLITE_TMPDIR=/sandbox/.openclaw/state \
+    TMPDIR=/sandbox/.openclaw/state
+
+USER sandbox
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
