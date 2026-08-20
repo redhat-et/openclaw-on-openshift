@@ -1,0 +1,79 @@
+# ARG must precede the *first* FROM to be visible to every FROM in this file.
+ARG GO_VERSION=1.26.6
+
+# --- gog CLI build stage ---------------------------------------------------
+# We forked gogcli (github.com/rh-forge/gogcli) to ship changes ahead of
+# upstream merge, so we build from our fork's source instead of pulling an
+# upstream release tarball. Mirrors gogcli's own Dockerfile build recipe.
+FROM golang:${GO_VERSION}-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS gogcli-build
+
+RUN apk add --no-cache git ca-certificates
+
+ARG GOGCLI_REPO=https://github.com/rh-forge/gogcli.git
+ARG GOGCLI_COMMIT=64744c2aad32745f907f08c5874e61b59b300054
+
+WORKDIR /src
+RUN git clone "${GOGCLI_REPO}" . && git checkout "${GOGCLI_COMMIT}"
+
+RUN set -eux; \
+    VERSION="$(git describe --tags --always --dirty)"; \
+    COMMIT="$(git rev-parse --short=12 HEAD)"; \
+    DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags="-s -w -X github.com/openclaw/gogcli/internal/cmd.version=${VERSION} -X github.com/openclaw/gogcli/internal/cmd.commit=${COMMIT} -X github.com/openclaw/gogcli/internal/cmd.date=${DATE}" \
+      -o /out/gog ./cmd/gog
+
+FROM quay.io/aipcc/base-images/agentic/openclaw:0.0.1-1787087976@sha256:251072c372f4b301b55160d2b6a8ce27a870a99c93d3402be2312f432a9b52ef
+
+USER root
+
+# OpenShift's restricted-v2 SCC runs the container as an arbitrary UID that
+# is not necessarily "sandbox", but always keeps it in supplemental group 0.
+# So paths gog/m365 need to read/write must be group-0-owned with group
+# perms mirroring owner perms, not owner-only 0700 pinned to a fixed UID.
+RUN mkdir -p /sandbox/.openclaw/state /run/secrets && \
+    chown -R sandbox:0 /sandbox && \
+    chmod -R g=u /sandbox/.openclaw && \
+    chmod 755 /run/secrets
+
+RUN   microdnf install -y iproute nftables util-linux && \
+      microdnf clean all
+
+# gog CLI — built from our fork (github.com/rh-forge/gogcli) in the
+# gogcli-build stage above, since our changes haven't been released
+# upstream yet.
+COPY --from=gogcli-build /out/gog /usr/local/bin/gog
+RUN chmod 0755 /usr/local/bin/gog && gog --version
+
+# m365 CLI — our fork of @pnp/cli-microsoft365 (github.com/rh-forge/cli-microsoft365),
+# pinned to a commit. The fork ships a "prepare": "npm run build" script, so
+# npm builds dist/ itself during the git-dependency install, same as it would
+# for any git-sourced package with a build step.
+# TODO(reproducibility): this git-dependency install has no lockfile, so the
+# fork's transitive npm deps can float between builds even at a fixed commit.
+# Deferred deliberately while we're still building images manually for
+# testing (PR #9 / CodeRabbit finding) — revisit before this goes past demo
+# use: add a committed package-lock.json to the fork and switch to `npm ci`.
+ARG M365_CLI_REPO=https://github.com/rh-forge/cli-microsoft365.git
+ARG M365_CLI_COMMIT=7c71c4806b9aee37bea78f7901fa6e818dbb95d8
+RUN set -eux; \
+    npm install --prefix /opt/openclaw ${M365_CLI_REPO}#${M365_CLI_COMMIT}; \
+    npm cache clean --force --prefix /opt/openclaw; \
+    ln -s /opt/openclaw/node_modules/.bin/m365 /usr/local/bin/m365; \
+    m365 version
+
+ENV HOME=/sandbox \
+    OPENCLAW_HOME=/sandbox \
+    SQLITE_TMPDIR=/sandbox/.openclaw/state \
+    TMPDIR=/sandbox/.openclaw/state
+
+# Reclaim ownership of anything the CLI installs above wrote to $HOME while
+# running as root (e.g. m365's `configstore` creates
+# /sandbox/.config/configstore as root during its `m365 version` smoke test).
+# Group-0-own it (not just sandbox:sandbox) for the same OpenShift
+# arbitrary-UID reason as the mkdir/chown block above.
+RUN chown -R sandbox:0 /sandbox && chmod -R g=u /sandbox
+
+USER sandbox
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
