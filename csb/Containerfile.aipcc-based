@@ -49,6 +49,11 @@ RUN chmod 0755 /usr/local/bin/gog && gog --version
 # pinned to a commit. The fork ships a "prepare": "npm run build" script, so
 # npm builds dist/ itself during the git-dependency install, same as it would
 # for any git-sourced package with a build step.
+# TODO(reproducibility): this git-dependency install has no lockfile, so the
+# fork's transitive npm deps can float between builds even at a fixed commit.
+# Deferred deliberately while we're still building images manually for
+# testing (PR #9 / CodeRabbit finding) — revisit before this goes past demo
+# use: add a committed package-lock.json to the fork and switch to `npm ci`.
 ARG M365_CLI_REPO=https://github.com/rh-forge/cli-microsoft365.git
 ARG M365_CLI_COMMIT=7c71c4806b9aee37bea78f7901fa6e818dbb95d8
 RUN set -eux; \
